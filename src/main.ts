@@ -1,9 +1,11 @@
 import "./style.css";
+import { loadAssetManifest } from "./assets.ts";
 import { createBoard } from "./board.ts";
 import {
   attackIdsFor,
   beginEnemy,
   blurb,
+  chooseBuild,
   clickTile,
   commandingUnit,
   createBattle,
@@ -13,13 +15,17 @@ import {
   pickUnit,
   promptFor,
   ROSTER_ORDER,
+  scriptedStep,
   selectionReach,
   statusOf,
   stepEnemy,
+  withCrowd,
   type GameState,
   type Tile,
   type Unit,
 } from "./game.ts";
+import { waveForRound } from "./pressure.ts";
+import { buildNames, offersFor, xpCostForNext, type BuildId } from "./progression.ts";
 
 const ENEMY_STEP_MS = 640;
 
@@ -34,10 +40,15 @@ const sides = required(document.querySelector<HTMLElement>("#sides"), "#sides");
 const prompt = required(document.querySelector<HTMLElement>("#prompt"), "#prompt");
 const detail = required(document.querySelector<HTMLElement>("#detail"), "#detail");
 const roster = required(document.querySelector<HTMLElement>("#roster"), "#roster");
+const meta = required(document.querySelector<HTMLElement>("#meta"), "#meta");
+const level = required(document.querySelector<HTMLElement>("#level"), "#level");
+const offers = required(document.querySelector<HTMLElement>("#offers"), "#offers");
+const probe = required(document.querySelector<HTMLElement>("#probe"), "#probe");
 const endTurn = required(document.querySelector<HTMLButtonElement>("#end"), "#end");
 const reset = required(document.querySelector<HTMLButtonElement>("#reset"), "#reset");
 
-const board = createBoard(view);
+const manifest = await loadAssetManifest();
+const board = createBoard(view, manifest);
 let state = createBattle();
 let hover: Tile | null = null;
 let enemyTimer = 0;
@@ -65,7 +76,7 @@ function renderRoster() {
     const units = state.units
       .filter((unit) => unit.side === side)
       .slice()
-      .sort((a, b) => (ROSTER_ORDER.get(a.id) ?? 0) - (ROSTER_ORDER.get(b.id) ?? 0));
+      .sort((a, b) => (ROSTER_ORDER.get(a.id) ?? 1000) - (ROSTER_ORDER.get(b.id) ?? 1000) || a.name.localeCompare(b.name));
     const section = document.createElement("section");
     section.className = "squad";
     const heading = document.createElement("h2");
@@ -87,7 +98,8 @@ function renderRoster() {
       const name = document.createElement("strong");
       name.textContent = unit.name;
       const meta = document.createElement("small");
-      meta.textContent = `${unit.role} · ${unit.hp}/${unit.maxHp}`;
+      const tier = unit.tier ? ` · tier ${unit.tier}` : "";
+      meta.textContent = `${unit.role} · ${unit.hp}/${unit.maxHp}${tier}`;
       who.append(name, meta);
       const status = document.createElement("span");
       status.className = "status";
@@ -101,12 +113,37 @@ function renderRoster() {
   }
   const hint = document.createElement("p");
   hint.id = "hint";
-  hint.textContent = "Oak, Lumen, and the cute host stand on the field. The rest of the set is around the board.";
+  hint.textContent =
+    "Select an Amber fighter, then a highlighted tile or a red ring. Brush costs 2 move. Stone blocks. Foes grow as the rounds climb.";
   roster.append(hint);
 }
 
+function renderOffers() {
+  level.hidden = state.phase !== "level";
+  offers.replaceChildren();
+  if (state.phase !== "level") return;
+  for (const offer of state.progression.pending) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "offer primary";
+    const title = document.createElement("strong");
+    title.textContent = `${offer.name} · ${offer.kind}`;
+    const detail = document.createElement("small");
+    detail.textContent = offer.detail;
+    button.append(title, detail);
+    button.addEventListener("click", () => setState(chooseBuild(state, offer.id as BuildId)));
+    offers.append(button);
+  }
+}
+
 function renderHud() {
-  round.textContent = `Round ${state.round}`;
+  const wave = waveForRound(state.round, state.pressure);
+  const pressure = wave?.crowd ? " · crowd" : wave ? " · pressure" : "";
+  round.textContent = `Round ${state.round}${pressure}`;
+  const cost = xpCostForNext(state.progression.level);
+  const xp = state.progressionRules.enabled ? `XP ${state.progression.xp}/${cost}` : "";
+  const builds = buildNames(state.progression.taken);
+  meta.textContent = [xp, builds].filter(Boolean).join(" · ");
   sides.replaceChildren();
   for (const [label, on] of [
     ["Amber", state.phase === "player" || state.winner === "player"],
@@ -122,12 +159,21 @@ function renderHud() {
   const attacks = attackIdsFor(state, reach);
   const commanding = commandingUnit(state);
   const hoverText = hover
-    ? describeHover({ hover, units: state.units, commanding, intent: state.intent, reach, attackIds: attacks })
+    ? describeHover({
+        hover,
+        units: state.units,
+        commanding,
+        intent: state.intent,
+        reach,
+        attackIds: attacks,
+        taken: state.progression.taken,
+        coverDefense: state.progressionRules.coverDefense,
+      })
     : null;
 
   if (state.phase === "victory") {
-    prompt.textContent = state.winner === "player" ? "Ash host is eliminated." : "Amber is eliminated.";
-    detail.textContent = state.lastEvent || (state.winner === "player" ? "Amber holds the field." : "Ash host holds the field.");
+    prompt.textContent = state.winner === "player" ? "Amber holds the field." : "Amber is eliminated.";
+    detail.textContent = state.lastEvent || (state.winner === "player" ? "The waves are done." : "Ash host holds the field.");
     endTurn.hidden = true;
     reset.classList.add("primary");
   } else {
@@ -139,6 +185,7 @@ function renderHud() {
     endTurn.disabled = state.phase !== "player";
     reset.classList.toggle("primary", false);
   }
+  renderOffers();
   if (rosterState !== state) {
     rosterState = state;
     renderRoster();
@@ -186,6 +233,29 @@ board.element.addEventListener("pointermove", (event) => {
 });
 board.element.addEventListener("pointerleave", () => publishHover(null));
 
+const params = new URLSearchParams(location.search);
+if (import.meta.env.DEV && params.has("crowd")) {
+  state = withCrowd(state);
+  if (params.has("play")) state = scriptedStep(state);
+}
+
+if (import.meta.env.DEV) {
+  board.setProbe((metrics) => {
+    const enemies = state.units.filter((unit) => unit.side === "enemy" && unit.hp > 0).length;
+    probe.dataset.ready = metrics.actors > 0 ? "1" : "0";
+    probe.textContent = JSON.stringify({
+      enemies,
+      actors: metrics.actors,
+      drawCalls: metrics.drawCalls,
+      triangles: metrics.triangles,
+      frameMs: Number(metrics.frameMs.toFixed(2)),
+      phase: state.phase,
+      round: state.round,
+      lastEvent: state.lastEvent,
+    });
+  });
+}
+
 renderHud();
 
 declare global {
@@ -194,6 +264,9 @@ declare global {
       state: () => GameState;
       click: (col: number, row: number) => void;
       project: (col: number, row: number) => { x: number; y: number };
+      crowd: () => void;
+      previewChoice: () => void;
+      metrics: () => { actors: number; drawCalls: number; triangles: number; frameMs: number };
     };
   }
 }
@@ -203,5 +276,13 @@ if (import.meta.env.DEV) {
     state: () => state,
     click: (col, row) => setState(clickTile(state, col, row)),
     project: (col, row) => board.project(col, row),
+      crowd: () => setState(withCrowd(state)),
+      previewChoice: () => {
+        const pending = state.progression.pending.length
+          ? state.progression.pending
+          : offersFor(state.progression.level, state.progression.taken);
+        setState({ ...state, phase: "level", selectedId: null, progression: { ...state.progression, pending } });
+      },
+      metrics: () => board.metrics(),
   };
 }

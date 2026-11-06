@@ -5,14 +5,18 @@ A small isometric skirmish in Three.js. The first battle is Ashfield. Stand-in m
 ## Run
 
 ```bash
-npm install
-npm run dev
+bun install
+bun run dev
 ```
 
-Open the URL Vite prints. Amber moves first.
+Open the URL Vite prints. Amber moves first. Controls, the wave clock, and level-up choices are in `PLAY.md`.
+
+```bash
+bun run test
+```
 
 ## Models
 
-The Ashfield fighters and the ring around the board use cutout stills from the cute set. `ASSET-MAP.md` lists which source file became which picture. The Comfy GLBs are flat gray, with no texture and no vertex color, so they are not on the board.
+The Ashfield fighters and the ring around the board use the cute-set GLBs. `ASSET-MAP.md` lists which source file became which mesh. Those files have no texture and no vertex color, so they render as gray clay. Optional `tile.glb`, `brush.glb`, and `stone.glb` still replace the ground.
 
-A missing picture keeps the stand-in mesh. Drop a `.glb` on a fighter slot in `src/models.ts` and that slot uses the mesh again. Optional `tile.glb`, `brush.glb`, and `stone.glb` still replace the ground. Amber faces the host. If a mesh looks sideways, set `yaw` on that slot (radians). The first animation clip loops.
+A missing file keeps the stand-in. Amber faces the host. If a mesh looks sideways, set `yaw` on that slot in `src/models.ts` (radians). The first animation clip loops.

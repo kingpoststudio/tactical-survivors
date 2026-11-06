@@ -1,3 +1,16 @@
+import { lastPressureRound, planReinforcements, waveForRound, type PressureRules, PRESSURE_DEFAULTS } from "./pressure.ts";
+import {
+  acceptBuild,
+  addCombatXp,
+  applyBuildToUnits,
+  defenseBonus,
+  freshProgression,
+  type BuildId,
+  type ProgressionRules,
+  type ProgressionState,
+  PROGRESSION_DEFAULTS,
+} from "./progression.ts";
+
 export const COLS = 8;
 export const ROWS = 7;
 
@@ -28,7 +41,7 @@ const BRUSH: ReadonlyArray<readonly [number, number]> = [
 ];
 
 export type Side = "player" | "enemy";
-export type Phase = "player" | "enemy" | "victory";
+export type Phase = "player" | "enemy" | "level" | "victory";
 export type Intent = "move" | "strike";
 export type Terrain = "plain" | "brush" | "stone";
 
@@ -50,6 +63,7 @@ export interface Unit {
   def: number;
   mov: number;
   acted: boolean;
+  tier?: number;
 }
 
 export interface GameState {
@@ -61,6 +75,15 @@ export interface GameState {
   round: number;
   lastEvent: string;
   enemyStep: number;
+  pressure: PressureRules;
+  spawnedRounds: number[];
+  progression: ProgressionState;
+  progressionRules: ProgressionRules;
+}
+
+export interface BattleOptions {
+  pressure?: PressureRules;
+  progression?: ProgressionRules;
 }
 
 export interface Reach {
@@ -127,7 +150,9 @@ export function blurb(role: string): string {
   }
 }
 
-export function createBattle(): GameState {
+export function createBattle(options: BattleOptions = {}): GameState {
+  const pressure = options.pressure ?? PRESSURE_DEFAULTS;
+  const progressionRules = options.progression ?? PROGRESSION_DEFAULTS;
   return {
     units: ROSTER.map((unit) => ({ ...unit, hp: unit.maxHp, acted: false })),
     phase: "player",
@@ -137,14 +162,28 @@ export function createBattle(): GameState {
     round: 1,
     lastEvent: "",
     enemyStep: 0,
+    pressure,
+    spawnedRounds: [],
+    progression: freshProgression(),
+    progressionRules,
   };
 }
 
-export function winnerOf(units: Unit[]): Side | null {
-  const players = living(units).some((unit) => unit.side === "player");
-  const enemies = living(units).some((unit) => unit.side === "enemy");
-  if (players && enemies) return null;
-  return players ? "player" : "enemy";
+export function winnerOf(g: GameState): Side | null {
+  const players = living(g.units).some((unit) => unit.side === "player");
+  if (!players) return "enemy";
+  const enemies = living(g.units).some((unit) => unit.side === "enemy");
+  if (enemies) return null;
+  if (!g.pressure.enabled || g.pressure.waves.length === 0) return "player";
+  const last = lastPressureRound(g.pressure);
+  if (g.spawnedRounds.includes(last) && g.round >= last) return "player";
+  return null;
+}
+
+export function strikeDamage(attacker: Unit, defender: Unit, taken: readonly BuildId[], coverDefense: number): number {
+  const terrain = TERRAIN[defender.row]?.[defender.col] ?? "plain";
+  const bonus = defenseBonus({ side: defender.side, terrain, taken, coverDefense });
+  return Math.max(1, attacker.atk - (defender.def + bonus));
 }
 
 export function dijkstra(origin: Unit, units: Unit[]): Reach {
@@ -243,7 +282,12 @@ function hereReach(unit: Unit): Reach {
   return { cost: new Map([[tileKey(unit.col, unit.row), 0]]), parent: new Map() };
 }
 
-function planMove(actor: Unit, units: Unit[]): { col: number; row: number; targetId: string | null } {
+function planMove(
+  actor: Unit,
+  units: Unit[],
+  taken: readonly BuildId[],
+  coverDefense: number,
+): { col: number; row: number; targetId: string | null } {
   const reach = dijkstra(actor, units);
   let best: { score: number; cost: number; col: number; row: number; targetId: string } | null = null;
   for (const [code, cost] of reach.cost) {
@@ -251,7 +295,7 @@ function planMove(actor: Unit, units: Unit[]): { col: number; row: number; targe
     for (const [dc, dr] of DIRS) {
       const foe = at(units, col + dc, row + dr);
       if (!foe || foe.side === actor.side) continue;
-      const dmg = Math.max(1, actor.atk - foe.def);
+      const dmg = strikeDamage(actor, foe, taken, coverDefense);
       const kill = foe.hp <= dmg ? 1 : 0;
       const score = kill * 100 + dmg * 10 + (20 - foe.hp);
       if (!best || score > best.score || (score === best.score && cost < best.cost)) {
@@ -277,21 +321,38 @@ function planMove(actor: Unit, units: Unit[]): { col: number; row: number; targe
   return { col: approach.col, row: approach.row, targetId: null };
 }
 
-function applyStrike(units: Unit[], attackerId: string, defenderId: string): { units: Unit[]; text: string } {
+interface StrikeResult {
+  units: Unit[];
+  text: string;
+  xp: number;
+}
+
+function applyStrike(units: Unit[], attackerId: string, defenderId: string, g: GameState): StrikeResult {
   const attacker = units.find((unit) => unit.id === attackerId);
   const defender = units.find((unit) => unit.id === defenderId);
-  if (!attacker || !defender) return { units, text: "" };
-  const dmg = Math.max(1, attacker.atk - defender.def);
+  if (!attacker || !defender) return { units, text: "", xp: 0 };
+  const dmg = strikeDamage(attacker, defender, g.progression.taken, g.progressionRules.coverDefense);
   const hp = Math.max(0, defender.hp - dmg);
   const next = units.map((unit) => (unit.id === defenderId ? { ...unit, hp } : unit));
   const text =
     hp === 0
       ? `${attacker.name} strikes ${defender.name} for ${dmg}. ${defender.name} falls.`
       : `${attacker.name} strikes ${defender.name} for ${dmg}.`;
-  return { units: next, text };
+  const xp =
+    attacker.side === "player" && g.progressionRules.enabled
+      ? g.progressionRules.xpPerHit + (hp === 0 ? g.progressionRules.xpPerKill : 0)
+      : 0;
+  return { units: next, text, xp };
 }
 
-export function counterattack(col: number, row: number, mover: Unit, units: Unit[]): { name: string; dmg: number } | null {
+export function counterattack(
+  col: number,
+  row: number,
+  mover: Unit,
+  units: Unit[],
+  taken: readonly BuildId[],
+  coverDefense: number,
+): { name: string; dmg: number } | null {
   const shifted = units.map((unit) => (unit.id === mover.id ? { ...unit, col, row } : unit));
   const standing = shifted.find((unit) => unit.id === mover.id);
   if (!standing) return null;
@@ -300,7 +361,7 @@ export function counterattack(col: number, row: number, mover: Unit, units: Unit
     if (enemy.side !== "enemy") continue;
     const reach = dijkstra(enemy, shifted);
     if (strikeTiles(enemy, standing, shifted, reach).length === 0) continue;
-    const dmg = Math.max(1, enemy.atk - standing.def);
+    const dmg = strikeDamage(enemy, standing, taken, coverDefense);
     if (!worst || dmg > worst.dmg) worst = { name: enemy.name, dmg };
   }
   return worst;
@@ -332,8 +393,98 @@ export function beginEnemy(g: GameState): GameState {
   };
 }
 
+function healWound(units: Unit[], times: number, amount: number): Unit[] {
+  let next = units;
+  for (let step = 0; step < times; step++) {
+    const wounded = living(next)
+      .filter((unit) => unit.side === "player" && unit.hp < unit.maxHp)
+      .sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0];
+    if (!wounded) break;
+    next = next.map((unit) =>
+      unit.id === wounded.id ? { ...unit, hp: Math.min(unit.maxHp, unit.hp + amount) } : unit,
+    );
+  }
+  return next;
+}
+
+function withXp(g: GameState, units: Unit[], xp: number, text: string, actedId: string): GameState {
+  const gain = addCombatXp(g.progression, xp, g.progressionRules);
+  const healed = healWound(withActed(units, actedId), gain.surplusHeals, g.progressionRules.healOnEmptyPool);
+  const next: GameState = {
+    ...g,
+    units: healed,
+    progression: gain.progression,
+    selectedId: null,
+    intent: "move",
+    lastEvent: text,
+  };
+  if (gain.progression.pending.length > 0) return { ...next, phase: "level" };
+  return settle(next);
+}
+
+function arrivalLine(round: number, placed: number, rules: PressureRules): string {
+  const wave = waveForRound(round, rules);
+  if (!wave || placed <= 0) return "The field is too tight for anyone else to step in.";
+  if (wave.crowd) return `A crowd of ${placed} joins the field.`;
+  if (wave.tier >= 3) return `${placed} tougher foes join the field.`;
+  if (wave.tier >= 2) return `${placed} harder foes join the field.`;
+  return placed === 1 ? "Another foe joins the field." : `${placed} more foes join the field.`;
+}
+
+function arrive(g: GameState): GameState {
+  if (!g.pressure.enabled || g.spawnedRounds.includes(g.round)) return g;
+  const wave = waveForRound(g.round, g.pressure);
+  if (!wave) return g;
+  const foes = planReinforcements({
+    round: g.round,
+    occupied: living(g.units).map((unit) => ({ col: unit.col, row: unit.row })),
+    terrain: TERRAIN,
+    rules: g.pressure,
+    usedIds: new Set(g.units.map((unit) => unit.id)),
+  });
+  const units: Unit[] = [
+    ...g.units,
+    ...foes.map((foe) => ({
+      id: foe.id,
+      name: foe.name,
+      role: foe.role,
+      side: "enemy" as const,
+      col: foe.col,
+      row: foe.row,
+      hp: foe.hp,
+      maxHp: foe.maxHp,
+      atk: foe.atk,
+      def: foe.def,
+      mov: foe.mov,
+      acted: false,
+      tier: foe.tier,
+    })),
+  ];
+  return {
+    ...g,
+    units,
+    spawnedRounds: [...g.spawnedRounds, g.round],
+    lastEvent: arrivalLine(g.round, foes.length, g.pressure),
+  };
+}
+
+export function withCrowd(g: GameState): GameState {
+  const wave = g.pressure.waves.find((item) => item.crowd);
+  if (!wave) return g;
+  return arrive({
+    ...g,
+    round: wave.round,
+    phase: "player",
+    winner: null,
+    selectedId: null,
+    intent: "move",
+    spawnedRounds: g.spawnedRounds.filter((round) => round !== wave.round),
+    units: g.units.map((unit) => ({ ...unit, acted: false })),
+  });
+}
+
 function settle(g: GameState): GameState {
-  const winner = winnerOf(g.units);
+  const winner = winnerOf(g);
   if (winner) return { ...g, phase: "victory", winner, selectedId: null, intent: "move" };
   const ready = g.units.some((unit) => unit.side === "player" && unit.hp > 0 && !unit.acted);
   if (!ready) return beginEnemy(g);
@@ -342,11 +493,11 @@ function settle(g: GameState): GameState {
 
 function finishEnemy(g: GameState): GameState {
   const units = g.units.map((unit) => (unit.side === "player" ? { ...unit, acted: false } : unit));
-  const winner = winnerOf(units);
-  if (winner) {
-    return { ...g, units, phase: "victory", winner, selectedId: null, intent: "move", enemyStep: g.enemyStep + 1 };
+  const wiped = winnerOf({ ...g, units });
+  if (wiped === "enemy") {
+    return { ...g, units, phase: "victory", winner: "enemy", selectedId: null, intent: "move", enemyStep: g.enemyStep + 1 };
   }
-  return {
+  const arrived = arrive({
     ...g,
     units,
     phase: "player",
@@ -355,12 +506,15 @@ function finishEnemy(g: GameState): GameState {
     intent: "move",
     round: g.round + 1,
     enemyStep: g.enemyStep + 1,
-  };
+  });
+  const winner = winnerOf(arrived);
+  if (winner) return { ...arrived, phase: "victory", winner, selectedId: null, intent: "move" };
+  return arrived;
 }
 
 export function stepEnemy(g: GameState): GameState {
   if (g.phase !== "enemy") return g;
-  const already = winnerOf(g.units);
+  const already = winnerOf(g);
   if (already) {
     return { ...g, phase: "victory", winner: already, selectedId: null, intent: "move", enemyStep: g.enemyStep + 1 };
   }
@@ -375,24 +529,54 @@ export function stepEnemy(g: GameState): GameState {
     });
   const actor = ready[0];
   if (!actor) return finishEnemy(g);
-  const plan = planMove(actor, g.units);
+  const plan = planMove(actor, g.units, g.progression.taken, g.progressionRules.coverDefense);
   let units = withPos(g.units, actor.id, plan.col, plan.row);
   let lastEvent = plan.col !== actor.col || plan.row !== actor.row ? `${actor.name} advances.` : `${actor.name} holds.`;
   if (plan.targetId) {
-    const hit = applyStrike(units, actor.id, plan.targetId);
+    const hit = applyStrike(units, actor.id, plan.targetId, g);
     units = hit.units;
     lastEvent = hit.text;
   }
   units = withActed(units, actor.id);
-  const winner = winnerOf(units);
+  const winner = winnerOf({ ...g, units });
   if (winner) {
     return { ...g, units, phase: "victory", winner, selectedId: null, intent: "move", lastEvent, enemyStep: g.enemyStep + 1 };
   }
   return { ...g, units, lastEvent, enemyStep: g.enemyStep + 1 };
 }
 
+export function chooseBuild(g: GameState, id: BuildId): GameState {
+  if (g.phase !== "level") return g;
+  const offer = g.progression.pending.find((item) => item.id === id);
+  if (!offer) return g;
+  const accepted = acceptBuild(g.progression, id);
+  if (!accepted) return g;
+  const units = healWound(applyBuildToUnits(g.units, id), accepted.surplusHeals, g.progressionRules.healOnEmptyPool);
+  const next: GameState = {
+    ...g,
+    units,
+    progression: accepted.progression,
+    phase: "player",
+    lastEvent: `${offer.name} taken.`,
+  };
+  if (accepted.progression.pending.length > 0) return { ...next, phase: "level" };
+  return settle(next);
+}
+
+export function scriptedStep(g: GameState): GameState {
+  if (g.phase !== "player") return g;
+  const actor = g.units.find((unit) => unit.side === "player" && unit.hp > 0 && !unit.acted);
+  if (!actor) return g;
+  const selected = clickTile(g, actor.col, actor.row);
+  const reach = selectionReach(selected);
+  const keys = [...moveKeysFor(selected, reach)];
+  if (keys.length === 0) return selected;
+  const [col, row] = keys[0].split(",").map(Number);
+  return clickTile(selected, col, row);
+}
+
 export function clickTile(g: GameState, col: number, row: number): GameState {
-  if (g.phase === "victory") return g;
+  if (g.phase === "victory" || g.phase === "level") return g;
   const occupant = at(g.units, col, row);
   if (g.phase === "enemy") return occupant ? { ...g, selectedId: occupant.id } : g;
   const actor = commandingUnit(g);
@@ -407,14 +591,8 @@ export function clickTile(g: GameState, col: number, row: number): GameState {
       });
     }
     if (occupant && occupant.side === "enemy" && Math.abs(occupant.col - actor.col) + Math.abs(occupant.row - actor.row) === 1) {
-      const hit = applyStrike(g.units, actor.id, occupant.id);
-      return settle({
-        ...g,
-        units: withActed(hit.units, actor.id),
-        selectedId: null,
-        intent: "move",
-        lastEvent: hit.text,
-      });
+      const hit = applyStrike(g.units, actor.id, occupant.id, g);
+      return withXp(g, hit.units, hit.xp, hit.text, actor.id);
     }
     return g;
   }
@@ -447,14 +625,8 @@ export function clickTile(g: GameState, col: number, row: number): GameState {
       const stand = strikeTiles(actor, occupant, g.units, reach)[0];
       if (stand) {
         const units = withPos(g.units, actor.id, stand.col, stand.row);
-        const hit = applyStrike(units, actor.id, occupant.id);
-        return settle({
-          ...g,
-          units: withActed(hit.units, actor.id),
-          selectedId: null,
-          intent: "move",
-          lastEvent: hit.text,
-        });
+        const hit = applyStrike(units, actor.id, occupant.id, g);
+        return withXp(g, hit.units, hit.xp, hit.text, actor.id);
       }
     }
   }
@@ -474,6 +646,7 @@ export function pickUnit(g: GameState, id: string): GameState {
 
 export function promptFor(g: GameState): string | null {
   if (g.phase === "victory") return null;
+  if (g.phase === "level") return "Choose one skill or item. The turn waits.";
   if (g.phase === "enemy") return "Ash host is moving.";
   const actor = commandingUnit(g);
   if (actor && g.intent === "strike") return "Click a foe in a red ring to strike, or click this unit again to hold.";
@@ -498,15 +671,22 @@ export function describeHover(args: {
   intent: Intent;
   reach: Reach;
   attackIds: Set<string>;
+  taken?: readonly BuildId[];
+  coverDefense?: number;
 }): string | null {
   const { hover, units, commanding, intent, reach, attackIds } = args;
+  const taken = args.taken ?? [];
+  const coverDefense = args.coverDefense ?? PROGRESSION_DEFAULTS.coverDefense;
   const unit = at(units, hover.col, hover.row);
   const terrain = TERRAIN[hover.row][hover.col];
   const code = tileKey(hover.col, hover.row);
   const bits: string[] = [];
-  if (unit) bits.push(`${unit.name}, ${unit.role}, ${unit.hp}/${unit.maxHp}`);
+  if (unit) {
+    const tier = unit.tier ? `, tier ${unit.tier}` : "";
+    bits.push(`${unit.name}, ${unit.role}, ${unit.hp}/${unit.maxHp}${tier}`);
+  }
   if (commanding && unit && attackIds.has(unit.id)) {
-    const dmg = Math.max(1, commanding.atk - unit.def);
+    const dmg = strikeDamage(commanding, unit, taken, coverDefense);
     bits.push(unit.hp <= dmg ? `Strike deals ${dmg}, a killing blow` : `Strike deals ${dmg}`);
   }
   const inRange =
@@ -514,10 +694,13 @@ export function describeHover(args: {
   if (terrain === "stone") bits.push("Blocks movement");
   else if (inRange) bits.push(`Costs ${reach.cost.get(code)} movement`);
   else if (terrain === "brush") bits.push("Brush costs 2 movement");
+  if (terrain === "brush" && taken.includes("brush-cover") && (!unit || unit.side === "player")) {
+    bits.push(`Brush cover adds ${coverDefense} defense`);
+  }
   if (commanding && (!unit || unit.id === commanding.id)) {
     const here = commanding.col === hover.col && commanding.row === hover.row;
     if (here || inRange) {
-      const threat = counterattack(hover.col, hover.row, commanding, units);
+      const threat = counterattack(hover.col, hover.row, commanding, units, taken, coverDefense);
       if (threat) bits.push(`${threat.name} can strike here for ${threat.dmg}`);
     }
   }

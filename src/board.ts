@@ -1,8 +1,9 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { clone as cloneSkinned } from "three/addons/utils/SkeletonUtils.js";
+import { EMPTY_MANIFEST, type AssetManifest } from "./assets.ts";
 import { COLS, ROWS, TERRAIN, type Phase, type Tile, type Unit } from "./game.ts";
-import { modelUrl, SCENERY, TERRAIN_MODELS, UNIT_MODELS } from "./models.ts";
+import { modelForUnit, modelUrl, SCENERY, TERRAIN_MODELS } from "./models.ts";
 
 const TILE = 1.15;
 const SURFACE = 0.08;
@@ -146,6 +147,15 @@ function cellOf(object: THREE.Object3D | null): Tile | null {
   return null;
 }
 
+function standLongAxisUp(object: THREE.Object3D) {
+  object.updateMatrixWorld(true);
+  const size = new THREE.Box3().setFromObject(object).getSize(new THREE.Vector3());
+  const longest = Math.max(size.x, size.y, size.z);
+  if (longest < size.y * 1.8) return;
+  if (size.x >= size.z) object.rotation.z = Math.PI / 2;
+  else object.rotation.x = -Math.PI / 2;
+}
+
 function frameModel(root: THREE.Object3D, footprint: number, maxHeight: number) {
   root.position.set(0, 0, 0);
   root.scale.set(1, 1, 1);
@@ -179,7 +189,14 @@ function shapeFor(role: string): "square" | "diamond" | "round" {
   return "diamond";
 }
 
-export function createBoard(parent: HTMLElement) {
+export interface BoardMetrics {
+  actors: number;
+  drawCalls: number;
+  triangles: number;
+  frameMs: number;
+}
+
+export function createBoard(parent: HTMLElement, manifest: AssetManifest = EMPTY_MANIFEST) {
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.setClearColor(COLOR.clear);
@@ -317,11 +334,24 @@ export function createBoard(parent: HTMLElement) {
     const angle = (index / SCENERY.length) * Math.PI * 2 - Math.PI / 2;
     const x = Math.cos(angle) * reserveRadiusX;
     const z = Math.sin(angle) * reserveRadiusZ;
-    void loadBillboard(piece.file).then((texture) => {
-      if (!texture) return;
-      const sprite = fitSprite(texture, piece.kind === "prop" ? 0.66 : 0.82, piece.kind === "prop" ? 0.86 : 1.08);
-      sprite.position.set(x, SURFACE, z);
-      scene.add(sprite);
+    const footprint = piece.kind === "prop" ? 0.62 : 0.78;
+    const height = piece.kind === "prop" ? 0.85 : 1.05;
+    void loadModel(piece.file).then((loaded) => {
+      if (!loaded) return;
+      const pivot = new THREE.Group();
+      const yaw = new THREE.Group();
+      const model = cloneSkinned(loaded.scene);
+      if (piece.kind === "prop") standLongAxisUp(model);
+      else if (piece.rotation) model.rotation.set(piece.rotation[0], piece.rotation[1], piece.rotation[2]);
+      yaw.rotation.y = Math.PI / 5;
+      yaw.add(model);
+      pivot.add(yaw);
+      frameModel(pivot, footprint, height);
+      paintShadows(pivot, true);
+      pivot.position.x += x;
+      pivot.position.z += z;
+      pivot.position.y += SURFACE;
+      scene.add(pivot);
     });
   });
 
@@ -350,14 +380,18 @@ export function createBoard(parent: HTMLElement) {
   hoverRing.visible = false;
   hoverRing.raycast = () => undefined;
   rings.add(hoverRing);
-  const attackRings = Array.from({ length: 6 }, () => {
-    const ring = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.52, 40), attackMaterial);
+  const attackRings: THREE.Mesh[] = [];
+  function ensureAttackRing(index: number): THREE.Mesh {
+    const existing = attackRings[index];
+    if (existing) return existing;
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.52, 28), attackMaterial);
     ring.rotation.x = -Math.PI / 2;
     ring.visible = false;
     ring.raycast = () => undefined;
     rings.add(ring);
+    attackRings.push(ring);
     return ring;
-  });
+  }
   const pathLine = new THREE.Line(
     new THREE.BufferGeometry(),
     new THREE.LineBasicMaterial({ color: COLOR.path }),
@@ -369,6 +403,18 @@ export function createBoard(parent: HTMLElement) {
   const actors = new Map<string, ActorView>();
   const clock = new THREE.Clock();
   let frame = 0;
+  const frameSamples: number[] = [];
+  let frameMs = 0;
+  let onFrame: ((metrics: BoardMetrics) => void) | null = null;
+
+  function metrics(): BoardMetrics {
+    return {
+      actors: actors.size,
+      drawCalls: renderer.info.render.calls,
+      triangles: renderer.info.render.triangles,
+      frameMs,
+    };
+  }
 
   function standIn(unit: Unit): THREE.Object3D {
     const color = unit.side === "player" ? COLOR.amber : COLOR.host;
@@ -423,7 +469,7 @@ export function createBoard(parent: HTMLElement) {
     };
     group.position.copy(world);
     actors.set(unit.id, view);
-    const slot = UNIT_MODELS[unit.id];
+    const slot = modelForUnit(unit, manifest);
     if (slot?.file.endsWith(".png")) {
       void loadBillboard(slot.file).then((texture) => {
         if (!texture || !actors.has(unit.id)) return;
@@ -436,11 +482,14 @@ export function createBoard(parent: HTMLElement) {
       void loadModel(slot.file).then((loaded) => {
         if (!loaded || !actors.has(unit.id)) return;
         const model = cloneSkinned(loaded.scene);
-        frameModel(model, 0.72, 1.2);
-        paintShadows(model, true);
-        model.userData.cell = { col: unit.col, row: unit.row };
+        if (slot.rotation) model.rotation.set(slot.rotation[0], slot.rotation[1], slot.rotation[2]);
+        const fitted = new THREE.Group();
+        fitted.add(model);
+        frameModel(fitted, 0.72, 1.2);
+        paintShadows(fitted, true);
+        fitted.userData.cell = { col: unit.col, row: unit.row };
         const pivot = new THREE.Group();
-        pivot.add(model);
+        pivot.add(fitted);
         pivot.rotation.y = (unit.side === "player" ? Math.PI : 0) + (slot.yaw ?? 0);
         body.clear();
         body.add(pivot);
@@ -553,14 +602,16 @@ export function createBoard(parent: HTMLElement) {
     else hoverRing.visible = false;
 
     const targets = view.units.filter((unit) => unit.hp > 0 && view.attackIds.has(unit.id));
-    attackRings.forEach((ring, index) => {
+    const ringCount = Math.max(attackRings.length, targets.length);
+    for (let index = 0; index < ringCount; index++) {
+      const ring = ensureAttackRing(index);
       const target = targets[index];
       if (!target) {
         ring.visible = false;
-        return;
+        continue;
       }
       placeRing(ring, target.col, target.row, 0.14);
-    });
+    }
 
     if (view.path.length > 1) {
       const points = view.path.map((tile) => {
@@ -577,6 +628,7 @@ export function createBoard(parent: HTMLElement) {
 
   function animate() {
     frame = requestAnimationFrame(animate);
+    const started = performance.now();
     const dt = Math.min(clock.getDelta(), 0.05);
     const blend = 1 - Math.exp(-dt * 10);
     for (const actor of actors.values()) {
@@ -586,6 +638,11 @@ export function createBoard(parent: HTMLElement) {
       actor.mixer?.update(dt);
     }
     renderer.render(scene, camera);
+    const sample = performance.now() - started;
+    frameSamples.push(sample);
+    if (frameSamples.length > 30) frameSamples.shift();
+    frameMs = frameSamples.reduce((sum, value) => sum + value, 0) / frameSamples.length;
+    onFrame?.(metrics());
   }
 
   resize();
@@ -599,6 +656,10 @@ export function createBoard(parent: HTMLElement) {
     project,
     resize,
     sync,
+    metrics,
+    setProbe(listener: ((metrics: BoardMetrics) => void) | null) {
+      onFrame = listener;
+    },
     dispose() {
       cancelAnimationFrame(frame);
       observer.disconnect();

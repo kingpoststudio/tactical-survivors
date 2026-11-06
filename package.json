@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "bun src/game.test.ts && bun src/run.test.ts"
   },
   "dependencies": {
     "three": "^0.180.0"
