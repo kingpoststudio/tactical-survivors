@@ -1,4 +1,50 @@
 {
-  "version": 1,
-  "slots": {}
+  "version": 2,
+  "activeStyle": "",
+  "slots": {},
+  "styles": {
+    "lowpoly-dark-fantasy": {
+      "label": "Lowpoly dark fantasy",
+      "note": "Five upright fighters. Scout stays the board mesh. Archers, the blob healer, the catapult crew, and flat props were not mapped.",
+      "slots": {
+        "role:Warden": { "file": "styles/lowpoly-dark-fantasy/01-player-vanguard-tank.lod15k.glb" },
+        "role:Raider": { "file": "styles/lowpoly-dark-fantasy/02-player-blademaster-duelist.lod15k.glb" },
+        "role:Sorceress": { "file": "styles/lowpoly-dark-fantasy/04-player-battle-mage-caster.lod15k.glb" },
+        "role:Skirmisher": { "file": "styles/lowpoly-dark-fantasy/07-enemy-swarm-fodder-A.lod15k.glb" },
+        "role:Brute": { "file": "styles/lowpoly-dark-fantasy/16-enemy-brute-shield.lod15k.glb" }
+      }
+    },
+    "woodland-folklore": {
+      "label": "Woodland folklore",
+      "note": "Nothing selected. The set is dioramas and subjects that are not the labeled roles: houses, ponds, trees, and figures on plinths.",
+      "slots": {}
+    },
+    "gothic-occult": {
+      "label": "Gothic occult",
+      "note": "Knight and heavy armor only. Cathedrals, coffins, and the witch labeled as a duelist were not mapped onto roles.",
+      "slots": {
+        "role:Warden": { "file": "styles/gothic-occult/01-player-vanguard-tank.lod15k.glb" },
+        "role:Brute": { "file": "styles/gothic-occult/18-enemy-brute-heavy.lod15k.glb" }
+      }
+    },
+    "arcane-clockwork": {
+      "label": "Arcane clockwork",
+      "note": "Shield mech, duelist, staff caster, and shield brute. Slot 26 is a ground sheet and was not imported. The spider fodder sits on a wide base and was left out.",
+      "slots": {
+        "role:Warden": { "file": "styles/arcane-clockwork/01-player-vanguard-tank.lod15k.glb" },
+        "role:Raider": { "file": "styles/arcane-clockwork/02-player-blademaster-duelist.lod15k.glb" },
+        "role:Sorceress": { "file": "styles/arcane-clockwork/04-player-battle-mage-caster.lod15k.glb" },
+        "role:Brute": { "file": "styles/arcane-clockwork/16-enemy-brute-shield.lod15k.glb" }
+      }
+    },
+    "bioluminescent-alien": {
+      "label": "Bioluminescent alien",
+      "note": "Shield warrior, beetle, and horned charger. Slots 5, 9, 19, 23, 24, 25, and 28 are generic humanoids and were not used. The jellyfish was not mapped onto a caster.",
+      "slots": {
+        "role:Warden": { "file": "styles/bioluminescent-alien/01-player-vanguard-tank.lod15k.glb" },
+        "role:Skirmisher": { "file": "styles/bioluminescent-alien/07-enemy-swarm-fodder-A.lod15k.glb" },
+        "role:Brute": { "file": "styles/bioluminescent-alien/17-enemy-brute-charger.lod15k.glb" }
+      }
+    }
+  }
 }

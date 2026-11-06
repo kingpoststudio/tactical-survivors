@@ -48,4 +48,6 @@ The turn waits until you pick. Defaults live in `PROGRESSION_DEFAULTS` in `src/p
 
 The fighters already on the board keep their meshes. Reinforcements reuse those same meshes by role. A missing file stays a colored stand-in.
 
-`public/assets/manifest.json` is the seam for art that is not here yet. `slots` starts empty. A later drop can map a unit id, or `role:Brute` and the other roles, to a file name under `/models/`. The value can be that file name, or `{ "file", "yaw", "rotation" }`. This file does not name a future set. If the manifest is missing, the current meshes stay.
+`public/assets/manifest.json` is the seam for art that is not here yet. Top-level `slots` stays empty, so the board meshes stay until you pick a style. A style set maps a unit id, or `role:Brute` and the other roles, to a file under `/models/`. The value can be that file name, or `{ "file", "yaw", "rotation" }`. Missing files keep the stand-in.
+
+The Style menu previews one set at a time. Current board is the default. Picking a set does not lock the game to that look. Woodland has no selected meshes. Fighters a set does not cover keep the board mesh. Scale and feet are fit on the tile when the mesh loads. A mesh with no explicit rotation stands its long axis up when it is clearly lying flat.

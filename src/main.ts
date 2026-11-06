@@ -1,4 +1,5 @@
 import "./style.css";
+import { playFight, playIdle } from "./autoplay.ts";
 import { loadAssetManifest } from "./assets.ts";
 import { createBoard } from "./board.ts";
 import {
@@ -44,6 +45,8 @@ const meta = required(document.querySelector<HTMLElement>("#meta"), "#meta");
 const level = required(document.querySelector<HTMLElement>("#level"), "#level");
 const offers = required(document.querySelector<HTMLElement>("#offers"), "#offers");
 const probe = required(document.querySelector<HTMLElement>("#probe"), "#probe");
+const stylePick = required(document.querySelector<HTMLSelectElement>("#style"), "#style");
+const styleNote = required(document.querySelector<HTMLElement>("#style-note"), "#style-note");
 const endTurn = required(document.querySelector<HTMLButtonElement>("#end"), "#end");
 const reset = required(document.querySelector<HTMLButtonElement>("#reset"), "#reset");
 
@@ -233,7 +236,39 @@ board.element.addEventListener("pointermove", (event) => {
 });
 board.element.addEventListener("pointerleave", () => publishHover(null));
 
+function showStyleNote() {
+  const id = manifest.activeStyle ?? "";
+  const style = id ? manifest.styles?.[id] : undefined;
+  const count = style ? Object.keys(style.slots).length : 0;
+  styleNote.textContent = style
+    ? `${style.note} ${count} role mesh${count === 1 ? "" : "es"} in this set.`
+    : "Current board meshes. Pick a style to preview it. The board look stays until you do.";
+}
+
+const currentOption = document.createElement("option");
+currentOption.value = "";
+currentOption.textContent = "Current board";
+stylePick.append(currentOption);
+for (const [id, style] of Object.entries(manifest.styles ?? {})) {
+  const option = document.createElement("option");
+  option.value = id;
+  option.textContent = style.label || id;
+  stylePick.append(option);
+}
+stylePick.addEventListener("change", () => {
+  manifest.activeStyle = stylePick.value;
+  showStyleNote();
+  renderHud();
+});
+
 const params = new URLSearchParams(location.search);
+const requested = params.get("style");
+if (requested && manifest.styles?.[requested]) {
+  manifest.activeStyle = requested;
+  stylePick.value = requested;
+}
+showStyleNote();
+
 if (import.meta.env.DEV && params.has("crowd")) {
   state = withCrowd(state);
   if (params.has("play")) state = scriptedStep(state);
@@ -252,6 +287,8 @@ if (import.meta.env.DEV) {
       phase: state.phase,
       round: state.round,
       lastEvent: state.lastEvent,
+      style: manifest.activeStyle || "current",
+      winner: state.winner,
     });
   });
 }
@@ -266,6 +303,7 @@ declare global {
       project: (col: number, row: number) => { x: number; y: number };
       crowd: () => void;
       previewChoice: () => void;
+      play: (mode: "fight" | "idle") => { winner: GameState["winner"]; round: number; phase: GameState["phase"]; actions: number; events: string[] };
       metrics: () => { actors: number; drawCalls: number; triangles: number; frameMs: number };
     };
   }
@@ -282,6 +320,17 @@ if (import.meta.env.DEV) {
           ? state.progression.pending
           : offersFor(state.progression.level, state.progression.taken);
         setState({ ...state, phase: "level", selectedId: null, progression: { ...state.progression, pending } });
+      },
+      play: (mode) => {
+        const result = mode === "idle" ? playIdle(createBattle()) : playFight(createBattle());
+        setState(result.state);
+        return {
+          winner: result.state.winner,
+          round: result.state.round,
+          phase: result.state.phase,
+          actions: result.actions,
+          events: result.events,
+        };
       },
       metrics: () => board.metrics(),
   };

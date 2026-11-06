@@ -4,13 +4,40 @@ export interface ManifestSlot {
   rotation?: readonly [number, number, number];
 }
 
-export interface AssetManifest {
-  version: number;
+export interface StyleSet {
+  label: string;
+  note: string;
   slots: Record<string, ManifestSlot>;
 }
 
+export interface AssetManifest {
+  version: number;
+  slots: Record<string, ManifestSlot>;
+  /** Empty keeps the meshes already on the board. A name here is a preview, not a locked look. */
+  activeStyle?: string;
+  styles?: Record<string, StyleSet>;
+}
+
 /** Empty on purpose. Current meshes stay in `models.ts` until a file fills a slot. */
-export const EMPTY_MANIFEST: AssetManifest = { version: 1, slots: {} };
+export const EMPTY_MANIFEST: AssetManifest = { version: 1, slots: {}, activeStyle: "", styles: {} };
+
+function parseStyle(value: unknown): StyleSet | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as { label?: unknown; note?: unknown; slots?: unknown };
+  const slots: Record<string, ManifestSlot> = {};
+  if (record.slots && typeof record.slots === "object") {
+    for (const [key, slotValue] of Object.entries(record.slots as Record<string, unknown>)) {
+      const slot = parseSlot(slotValue);
+      if (!key.trim() || !slot) continue;
+      slots[key] = slot;
+    }
+  }
+  return {
+    label: typeof record.label === "string" ? record.label : "",
+    note: typeof record.note === "string" ? record.note : "",
+    slots,
+  };
+}
 
 function parseSlot(value: unknown): ManifestSlot | null {
   if (typeof value === "string") {
@@ -43,8 +70,29 @@ export function parseAssetManifest(data: unknown): AssetManifest {
       slots[key] = slot;
     }
   }
+  const styles: Record<string, StyleSet> = {};
+  const rawStyles = (record as { styles?: unknown }).styles;
+  if (rawStyles && typeof rawStyles === "object") {
+    for (const [key, value] of Object.entries(rawStyles as Record<string, unknown>)) {
+      const style = parseStyle(value);
+      if (!key.trim() || !style) continue;
+      styles[key] = style;
+    }
+  }
   const version = typeof record.version === "number" && Number.isFinite(record.version) ? record.version : 1;
-  return { version, slots };
+  const active = (record as { activeStyle?: unknown }).activeStyle;
+  return {
+    version,
+    slots,
+    activeStyle: typeof active === "string" ? active : "",
+    styles,
+  };
+}
+
+export function activeStyleSlots(manifest: AssetManifest): Record<string, ManifestSlot> {
+  const id = manifest.activeStyle ?? "";
+  if (!id) return {};
+  return manifest.styles?.[id]?.slots ?? {};
 }
 
 export function resolveManifestSlot(manifest: AssetManifest, keys: readonly string[]): ManifestSlot | undefined {

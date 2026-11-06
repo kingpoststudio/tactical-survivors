@@ -1,4 +1,4 @@
-import { EMPTY_MANIFEST, resolveManifestSlot, type AssetManifest } from "./assets.ts";
+import { activeStyleSlots, EMPTY_MANIFEST, resolveManifestSlot, type AssetManifest } from "./assets.ts";
 
 export interface ModelSlot {
   file: string;
@@ -88,7 +88,10 @@ export function modelForUnit(
   unit: { id: string; role: string },
   manifest: AssetManifest = EMPTY_MANIFEST,
 ): ModelSlot | undefined {
-  const dropped = resolveManifestSlot(manifest, [unit.id, `role:${unit.role}`]);
+  const keys = [unit.id, `role:${unit.role}`];
+  const styled = resolveManifestSlot({ version: manifest.version, slots: activeStyleSlots(manifest) }, keys);
+  if (styled) return { file: styled.file, yaw: styled.yaw, rotation: styled.rotation };
+  const dropped = resolveManifestSlot(manifest, keys);
   if (dropped) return { file: dropped.file, yaw: dropped.yaw, rotation: dropped.rotation };
   return UNIT_MODELS[unit.id] ?? ROLE_MODELS[unit.role];
 }

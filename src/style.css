@@ -45,6 +45,28 @@ header {
   gap: 8px;
 }
 
+#style-label {
+  font-size: 12px;
+  color: #5e584f;
+}
+
+#style {
+  font: inherit;
+  font-size: 13px;
+  margin-left: 4px;
+  border: 1px solid #c4bdae;
+  background: #efeae1;
+  color: #2a2622;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+#style-note {
+  margin: 2px 0 0;
+  color: #5e584f;
+  font-size: 12px;
+}
+
 .pill {
   border: 1px solid #d3cdc2;
   border-radius: 999px;

@@ -49,6 +49,8 @@ interface ActorView {
   display: THREE.Vector3;
   target: THREE.Vector3;
   placed: boolean;
+  dressed: string;
+  dressToken: number;
 }
 
 interface CellMesh {
@@ -433,7 +435,10 @@ export function createBoard(parent: HTMLElement, manifest: AssetManifest = EMPTY
 
   function ensureActor(unit: Unit): ActorView {
     const existing = actors.get(unit.id);
-    if (existing) return existing;
+    if (existing) {
+      dress(existing, unit);
+      return existing;
+    }
     const group = new THREE.Group();
     group.userData.cell = { col: unit.col, row: unit.row };
     const body = new THREE.Group();
@@ -466,43 +471,62 @@ export function createBoard(parent: HTMLElement, manifest: AssetManifest = EMPTY
       display: world.clone(),
       target: world.clone(),
       placed: false,
+      dressed: "",
+      dressToken: 0,
     };
     group.position.copy(world);
     actors.set(unit.id, view);
-    const slot = modelForUnit(unit, manifest);
-    if (slot?.file.endsWith(".png")) {
-      void loadBillboard(slot.file).then((texture) => {
-        if (!texture || !actors.has(unit.id)) return;
-        const sprite = fitSprite(texture, 0.94, 1.38);
-        body.clear();
-        body.add(sprite);
-        bar.position.y = Math.max(0.9, sprite.scale.y + 0.16);
-      });
-    } else if (slot) {
-      void loadModel(slot.file).then((loaded) => {
-        if (!loaded || !actors.has(unit.id)) return;
-        const model = cloneSkinned(loaded.scene);
-        if (slot.rotation) model.rotation.set(slot.rotation[0], slot.rotation[1], slot.rotation[2]);
-        const fitted = new THREE.Group();
-        fitted.add(model);
-        frameModel(fitted, 0.72, 1.2);
-        paintShadows(fitted, true);
-        fitted.userData.cell = { col: unit.col, row: unit.row };
-        const pivot = new THREE.Group();
-        pivot.add(fitted);
-        pivot.rotation.y = (unit.side === "player" ? Math.PI : 0) + (slot.yaw ?? 0);
-        body.clear();
-        body.add(pivot);
-        if (loaded.animations[0]) {
-          view.mixer = new THREE.AnimationMixer(model);
-          view.mixer.clipAction(loaded.animations[0]).play();
-        }
-        model.updateMatrixWorld(true);
-        const height = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3()).y;
-        bar.position.y = Math.max(0.9, height + 0.18);
-      });
-    }
+    dress(view, unit);
     return view;
+  }
+
+  function dress(view: ActorView, unit: Unit) {
+    const slot = modelForUnit(unit, manifest);
+    const key = slot ? `${slot.file}|${slot.yaw ?? ""}|${slot.rotation?.join(",") ?? ""}` : "stand-in";
+    if (view.dressed === key) return;
+    view.dressed = key;
+    view.dressToken += 1;
+    const token = view.dressToken;
+    view.mixer = null;
+    view.body.clear();
+    view.body.add(standIn(unit));
+    view.bar.position.y = 0.95;
+    if (!slot) return;
+    const apply = (object: THREE.Object3D, height: number) => {
+      if (view.dressToken !== token || !actors.has(unit.id)) return;
+      view.body.clear();
+      view.body.add(object);
+      view.bar.position.y = Math.max(0.9, height + 0.16);
+    };
+    if (slot.file.endsWith(".png")) {
+      void loadBillboard(slot.file).then((texture) => {
+        if (!texture) return;
+        const sprite = fitSprite(texture, 0.94, 1.38);
+        apply(sprite, sprite.scale.y);
+      });
+      return;
+    }
+    void loadModel(slot.file).then((loaded) => {
+      if (!loaded || view.dressToken !== token) return;
+      const model = cloneSkinned(loaded.scene);
+      if (slot.rotation) model.rotation.set(slot.rotation[0], slot.rotation[1], slot.rotation[2]);
+      else standLongAxisUp(model);
+      const fitted = new THREE.Group();
+      fitted.add(model);
+      frameModel(fitted, 0.72, 1.2);
+      paintShadows(fitted, true);
+      fitted.userData.cell = { col: unit.col, row: unit.row };
+      const pivot = new THREE.Group();
+      pivot.add(fitted);
+      pivot.rotation.y = (unit.side === "player" ? Math.PI : 0) + (slot.yaw ?? 0);
+      if (loaded.animations[0]) {
+        view.mixer = new THREE.AnimationMixer(model);
+        view.mixer.clipAction(loaded.animations[0]).play();
+      }
+      fitted.updateMatrixWorld(true);
+      const height = new THREE.Box3().setFromObject(fitted).getSize(new THREE.Vector3()).y;
+      apply(pivot, height);
+    });
   }
 
   function resize() {
