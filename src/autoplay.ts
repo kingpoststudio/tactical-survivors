@@ -97,6 +97,12 @@ export function playIdle(start: GameState = createBattle()): PlayResult {
   return play(start, true);
 }
 
+export function stepBattle(g: GameState): GameState {
+  if (g.phase === "enemy") return stepEnemy(g);
+  if (g.phase === "victory" || g.phase === "cast") return g;
+  return act(g);
+}
+
 function play(start: GameState, idle: boolean): PlayResult {
   let state = start;
   const events: string[] = [];

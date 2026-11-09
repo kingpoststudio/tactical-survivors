@@ -6,7 +6,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "bun src/game.test.ts && bun src/run.test.ts && bun src/playthrough.test.ts"
+    "test": "bun src/game.test.ts && bun src/run.test.ts && bun src/playthrough.test.ts && bun src/mathcast.test.ts && bun src/campaign.test.ts"
   },
   "dependencies": {
     "three": "^0.180.0"

@@ -1,9 +1,28 @@
 import "./style.css";
-import { playFight, playIdle } from "./autoplay.ts";
+import { playFight, playIdle, stepBattle } from "./autoplay.ts";
 import { loadAssetManifest } from "./assets.ts";
 import { createBoard } from "./board.ts";
 import {
+  BATTLE_GOLD,
+  BUN_COST,
+  RECRUIT_COST,
+  WORLD,
+  buyBun,
+  createCampaign,
+  linked,
+  nodeById,
+  recruit,
+  returnFromBattle,
+  setAnswerMode,
+  setDifficulty,
+  startBattle,
+  travel,
+  type Campaign,
+} from "./campaign.ts";
+import {
+  armCast,
   attackIdsFor,
+  answerCast,
   beginEnemy,
   blurb,
   chooseBuild,
@@ -11,6 +30,7 @@ import {
   commandingUnit,
   createBattle,
   describeHover,
+  finishCast,
   hoverPath,
   moveKeysFor,
   pickUnit,
@@ -18,6 +38,8 @@ import {
   ROSTER_ORDER,
   scriptedStep,
   selectionReach,
+  setBattleMath,
+  spellTargetIds,
   statusOf,
   stepEnemy,
   withCrowd,
@@ -25,16 +47,20 @@ import {
   type Tile,
   type Unit,
 } from "./game.ts";
+import { isAnswerMode, isDifficulty } from "./mathcast.ts";
 import { waveForRound } from "./pressure.ts";
 import { buildNames, offersFor, xpCostForNext, type BuildId } from "./progression.ts";
 
 const ENEMY_STEP_MS = 640;
+const KIND_LABEL = { camp: "Start", battle: "Battle", reward: "Reward", town: "Town" } as const;
 
 function required<T extends Element>(element: T | null, name: string): T {
   if (!element) throw new Error(`Ashfield is missing ${name}.`);
   return element;
 }
 
+const stage = required(document.querySelector<HTMLElement>("#stage"), "#stage");
+const map = required(document.querySelector<HTMLElement>("#map"), "#map");
 const view = required(document.querySelector<HTMLElement>("#view"), "#view");
 const round = required(document.querySelector<HTMLElement>("#round"), "#round");
 const sides = required(document.querySelector<HTMLElement>("#sides"), "#sides");
@@ -47,15 +73,32 @@ const offers = required(document.querySelector<HTMLElement>("#offers"), "#offers
 const probe = required(document.querySelector<HTMLElement>("#probe"), "#probe");
 const stylePick = required(document.querySelector<HTMLSelectElement>("#style"), "#style");
 const styleNote = required(document.querySelector<HTMLElement>("#style-note"), "#style-note");
+const difficultyPick = required(document.querySelector<HTMLSelectElement>("#difficulty"), "#difficulty");
+const answerPick = required(document.querySelector<HTMLSelectElement>("#answer-mode"), "#answer-mode");
+const castButton = required(document.querySelector<HTMLButtonElement>("#cast"), "#cast");
 const endTurn = required(document.querySelector<HTMLButtonElement>("#end"), "#end");
+const back = required(document.querySelector<HTMLButtonElement>("#back"), "#back");
+const pressureButton = required(document.querySelector<HTMLButtonElement>("#pressure"), "#pressure");
 const reset = required(document.querySelector<HTMLButtonElement>("#reset"), "#reset");
+const castPanel = required(document.querySelector<HTMLElement>("#cast-panel"), "#cast-panel");
+const problem = required(document.querySelector<HTMLElement>("#problem"), "#problem");
+const caption = required(document.querySelector<HTMLElement>("#caption"), "#caption");
+const castNote = required(document.querySelector<HTMLElement>("#cast-note"), "#cast-note");
+const choices = required(document.querySelector<HTMLElement>("#choices"), "#choices");
+const typedForm = required(document.querySelector<HTMLFormElement>("#typed-form"), "#typed-form");
+const typedAnswer = required(document.querySelector<HTMLInputElement>("#typed-answer"), "#typed-answer");
+const castContinue = required(document.querySelector<HTMLButtonElement>("#cast-continue"), "#cast-continue");
 
 const manifest = await loadAssetManifest();
 const board = createBoard(view, manifest);
-let state = createBattle();
+type Mode = "map" | "battle" | "pressure";
+let mode: Mode = "map";
+let campaign: Campaign = createCampaign();
+let state = createBattle({ pressure: { enabled: false, waves: [] }, casters: ["mora"] });
 let hover: Tile | null = null;
 let enemyTimer = 0;
 let rosterState: GameState | null = null;
+let shownProblem = "";
 
 function shapeClass(role: string): string {
   if (role === "Warden" || role === "Brute") return "square";
@@ -100,10 +143,11 @@ function renderRoster() {
       who.className = "who";
       const name = document.createElement("strong");
       name.textContent = unit.name;
-      const meta = document.createElement("small");
+      const line = document.createElement("small");
       const tier = unit.tier ? ` · tier ${unit.tier}` : "";
-      meta.textContent = `${unit.role} · ${unit.hp}/${unit.maxHp}${tier}`;
-      who.append(name, meta);
+      const spark = state.casters.includes(unit.id) ? " · Spark" : "";
+      line.textContent = `${unit.role} · ${unit.hp}/${unit.maxHp}${tier}${spark}`;
+      who.append(name, line);
       const status = document.createElement("span");
       status.className = "status";
       status.textContent = statusOf(unit, state);
@@ -116,8 +160,7 @@ function renderRoster() {
   }
   const hint = document.createElement("p");
   hint.id = "hint";
-  hint.textContent =
-    "Select an Amber fighter, then a highlighted tile or a red ring. Brush costs 2 move. Stone blocks. Foes grow as the rounds climb.";
+  hint.textContent = "Select Lumen, move into range, then Cast. The answer is the damage. A wrong answer fizzles. Brush costs 2. Stone blocks.";
   roster.append(hint);
 }
 
@@ -131,12 +174,118 @@ function renderOffers() {
     button.className = "offer primary";
     const title = document.createElement("strong");
     title.textContent = `${offer.name} · ${offer.kind}`;
-    const detail = document.createElement("small");
-    detail.textContent = offer.detail;
-    button.append(title, detail);
+    const line = document.createElement("small");
+    line.textContent = offer.detail;
+    button.append(title, line);
     button.addEventListener("click", () => setState(chooseBuild(state, offer.id as BuildId)));
     offers.append(button);
   }
+}
+
+function renderCast() {
+  const spell = state.spell;
+  const open = mode !== "map" && state.phase === "cast" && spell !== null;
+  castPanel.hidden = !open;
+  if (!open || !spell) {
+    shownProblem = "";
+    return;
+  }
+  problem.textContent = spell.problem.prompt;
+  caption.textContent = spell.problem.caption;
+  const resolved = spell.outcome !== "open";
+  castNote.textContent = spell.outcome === "hit" ? `Spark deals ${spell.damage}.` : spell.outcome === "fizzle" ? "Fizzle." : "";
+  choices.hidden = state.answerMode !== "choice" || resolved;
+  typedForm.hidden = state.answerMode !== "typed" || resolved;
+  castContinue.hidden = !resolved;
+  if (spell.problem.prompt !== shownProblem) {
+    shownProblem = spell.problem.prompt;
+    typedAnswer.value = "";
+  }
+  if (!resolved && state.answerMode === "choice") {
+    choices.replaceChildren();
+    for (const choice of spell.problem.choices) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "choice";
+      button.dataset.choice = String(choice);
+      button.textContent = String(choice);
+      button.addEventListener("click", () => setState(answerCast(state, choice)));
+      choices.append(button);
+    }
+  }
+}
+
+function renderMap() {
+  map.replaceChildren();
+  const nodes = document.createElement("div");
+  nodes.className = "map-nodes";
+  for (const node of WORLD) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = node.id === campaign.nodeId ? "node here" : "node";
+    button.dataset.node = node.id;
+    const clear = campaign.cleared.includes(node.id) ? " · clear" : "";
+    button.textContent = `${node.name} · ${KIND_LABEL[node.kind]}${clear}`;
+    const here = node.id === campaign.nodeId;
+    button.disabled = here || !linked(campaign.nodeId, node.id);
+    button.addEventListener("click", () => enter(node.id));
+    nodes.append(button);
+  }
+  map.append(nodes);
+  if (nodeById(campaign.nodeId).kind === "battle") {
+    const fight = document.createElement("button");
+    fight.type = "button";
+    fight.className = "primary";
+    fight.dataset.fight = campaign.nodeId;
+    fight.textContent = "Fight";
+    fight.addEventListener("click", () => beginMapBattle());
+    map.append(fight);
+  }
+  if (campaign.nodeId === "town") {
+    const shop = document.createElement("div");
+    shop.id = "shop";
+    const bun = document.createElement("button");
+    bun.type = "button";
+    bun.dataset.buy = "bun";
+    bun.textContent = `Sweet bun · ${BUN_COST}`;
+    bun.disabled = campaign.bunBought || campaign.gold < BUN_COST;
+    bun.addEventListener("click", () => {
+      campaign = buyBun(campaign);
+      render();
+    });
+    const ally = document.createElement("button");
+    ally.type = "button";
+    ally.dataset.buy = "pip";
+    ally.textContent = `Recruit Pip · ${RECRUIT_COST}`;
+    ally.disabled = campaign.recruited || campaign.gold < RECRUIT_COST;
+    ally.addEventListener("click", () => {
+      campaign = recruit(campaign);
+      render();
+    });
+    shop.append(bun, ally);
+    map.append(shop);
+  }
+  const party = document.createElement("div");
+  party.id = "map-party";
+  for (const ally of campaign.party) {
+    const card = document.createElement("div");
+    card.className = "card";
+    const name = document.createElement("strong");
+    name.textContent = ally.name;
+    const line = document.createElement("small");
+    const spark = ally.spell ? " · Spark" : "";
+    line.textContent = `${ally.hp}/${ally.maxHp}${spark}`;
+    card.append(name, line);
+    party.append(card);
+  }
+  map.append(party);
+}
+
+function syncMathControls() {
+  const difficulty = mode === "map" ? campaign.difficulty : state.difficulty;
+  const answerMode = mode === "map" ? campaign.answerMode : state.answerMode;
+  if (difficultyPick.value !== difficulty) difficultyPick.value = difficulty;
+  if (answerPick.value !== answerMode) answerPick.value = answerMode;
 }
 
 function renderHud() {
@@ -146,10 +295,11 @@ function renderHud() {
   const cost = xpCostForNext(state.progression.level);
   const xp = state.progressionRules.enabled ? `XP ${state.progression.xp}/${cost}` : "";
   const builds = buildNames(state.progression.taken);
-  meta.textContent = [xp, builds].filter(Boolean).join(" · ");
+  const gold = mode === "battle" ? `Gold ${campaign.gold}` : "";
+  meta.textContent = [gold, xp, builds].filter(Boolean).join(" · ");
   sides.replaceChildren();
   for (const [label, on] of [
-    ["Amber", state.phase === "player" || state.winner === "player"],
+    ["Amber", state.phase === "player" || state.phase === "cast" || state.winner === "player"],
     ["Ash host", state.phase === "enemy" || state.winner === "enemy"],
   ] as const) {
     const pill = document.createElement("span");
@@ -174,11 +324,24 @@ function renderHud() {
       })
     : null;
 
+  const actor = commandingUnit(state);
+  const casting = !!actor && state.casters.includes(actor.id) && state.phase === "player";
+  castButton.hidden = !casting;
+  castButton.disabled = spellTargetIds(state).length === 0;
+
   if (state.phase === "victory") {
-    prompt.textContent = state.winner === "player" ? "Amber holds the field." : "Amber is eliminated.";
-    detail.textContent = state.lastEvent || (state.winner === "player" ? "The waves are done." : "Ash host holds the field.");
+    prompt.textContent =
+      mode === "battle" && state.winner === "player"
+        ? `Map. ${campaign.gold} + ${BATTLE_GOLD} gold.`
+        : state.winner === "player"
+          ? "Amber holds the field."
+          : "Amber is eliminated.";
+    detail.textContent = state.lastEvent || (state.winner === "player" ? "The field is clear." : "Ash host holds the field.");
     endTurn.hidden = true;
+    reset.hidden = mode !== "pressure";
     reset.classList.add("primary");
+    back.hidden = false;
+    back.classList.add("primary");
   } else {
     prompt.textContent = promptFor(state) ?? "";
     const selected = state.units.find((unit) => unit.id === state.selectedId);
@@ -186,9 +349,14 @@ function renderHud() {
     detail.textContent = hoverText || state.lastEvent || stats;
     endTurn.hidden = false;
     endTurn.disabled = state.phase !== "player";
+    reset.hidden = mode !== "pressure";
     reset.classList.toggle("primary", false);
+    back.hidden = mode !== "pressure";
+    back.classList.remove("primary");
   }
+  pressureButton.hidden = true;
   renderOffers();
+  renderCast();
   if (rosterState !== state) {
     rosterState = state;
     renderRoster();
@@ -204,34 +372,167 @@ function renderHud() {
   });
 }
 
+function renderMapChrome() {
+  const node = nodeById(campaign.nodeId);
+  round.textContent = node.name;
+  const builds = buildNames(campaign.progression.taken);
+  meta.textContent = [`Gold ${campaign.gold}`, builds].filter(Boolean).join(" · ");
+  sides.replaceChildren();
+  prompt.textContent = node.kind === "town" ? "Spend gold." : node.kind === "battle" ? "Fight, or step on." : "Step to the next place.";
+  detail.textContent = campaign.lastEvent;
+  level.hidden = true;
+  castPanel.hidden = true;
+  castButton.hidden = true;
+  endTurn.hidden = true;
+  back.hidden = true;
+  reset.hidden = true;
+  pressureButton.hidden = false;
+  map.hidden = false;
+  view.hidden = true;
+  roster.hidden = true;
+  renderMap();
+}
+
+function render() {
+  syncMathControls();
+  if (mode === "map") {
+    renderMapChrome();
+  } else {
+    map.hidden = true;
+    view.hidden = false;
+    roster.hidden = false;
+    renderHud();
+  }
+  publishProbe();
+  stage.dataset.mode = mode;
+}
+
 function setState(next: GameState) {
   window.clearTimeout(enemyTimer);
   state = next;
-  renderHud();
-  if (state.phase === "enemy") {
+  render();
+  if (mode !== "map" && state.phase === "enemy") {
     enemyTimer = window.setTimeout(() => setState(stepEnemy(state)), ENEMY_STEP_MS);
   }
+}
+
+function showBattle(next: GameState) {
+  hover = null;
+  rosterState = null;
+  setState(next);
+  requestAnimationFrame(() => board.resize());
+}
+
+function enter(nodeId: string) {
+  const result = travel(campaign, nodeId);
+  if (result.kind === "stay") return;
+  campaign = result.campaign;
+  if (result.kind === "battle") {
+    mode = "battle";
+    showBattle(result.battle);
+    return;
+  }
+  mode = "map";
+  render();
+}
+
+function beginMapBattle() {
+  mode = "battle";
+  showBattle(startBattle(campaign));
+}
+
+function backToMap() {
+  window.clearTimeout(enemyTimer);
+  if (mode === "battle") campaign = returnFromBattle(campaign, state);
+  mode = "map";
+  hover = null;
+  render();
+}
+
+function startPressure() {
+  mode = "pressure";
+  showBattle(createBattle({ casters: ["mora"], difficulty: campaign.difficulty, answerMode: campaign.answerMode }));
 }
 
 function publishHover(next: Tile | null) {
   const same = next?.col === hover?.col && next?.row === hover?.row;
   if (same || (!next && !hover)) return;
   hover = next;
-  renderHud();
+  if (mode !== "map") render();
+}
+
+function publishProbe() {
+  if (!import.meta.env.DEV) return;
+  const target = state.spell ? state.units.find((unit) => unit.id === state.spell?.targetId) : undefined;
+  const metrics = board.metrics();
+  probe.dataset.ready = mode === "map" || metrics.actors > 0 ? "1" : "0";
+  probe.textContent = JSON.stringify({
+    mode,
+    node: campaign.nodeId,
+    gold: campaign.gold,
+    party: campaign.party.map((ally) => ally.name),
+    taken: campaign.progression.taken,
+    bun: campaign.bunBought,
+    recruited: campaign.recruited,
+    phase: mode === "map" ? "map" : state.phase,
+    round: state.round,
+    intent: state.intent,
+    lastEvent: mode === "map" ? campaign.lastEvent : state.lastEvent,
+    problem: state.spell?.problem.prompt ?? "",
+    cast: state.spell?.outcome ?? "",
+    damage: state.spell?.damage ?? null,
+    targetHp: target?.hp ?? null,
+    pressure: state.pressure.enabled,
+    enemies: state.units.filter((unit) => unit.side === "enemy" && unit.hp > 0).length,
+    actors: metrics.actors,
+    drawCalls: metrics.drawCalls,
+    triangles: metrics.triangles,
+    frameMs: Number(metrics.frameMs.toFixed(2)),
+    style: manifest.activeStyle || "current",
+    winner: mode === "map" ? null : state.winner,
+  });
 }
 
 endTurn.addEventListener("click", () => setState(beginEnemy(state)));
+castButton.addEventListener("click", () => setState(armCast(state)));
+castContinue.addEventListener("click", () => setState(finishCast(state)));
+typedForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const text = typedAnswer.value.trim();
+  if (!/^-?\d+$/.test(text)) {
+    castNote.textContent = "Type a number.";
+    return;
+  }
+  setState(answerCast(state, Number(text)));
+});
+back.addEventListener("click", () => backToMap());
+pressureButton.addEventListener("click", () => startPressure());
 reset.addEventListener("click", () => {
+  if (mode !== "pressure") return;
   hover = null;
-  setState(createBattle());
+  showBattle(createBattle({ casters: ["mora"], difficulty: campaign.difficulty, answerMode: campaign.answerMode }));
+});
+difficultyPick.addEventListener("change", () => {
+  if (!isDifficulty(difficultyPick.value)) return;
+  campaign = setDifficulty(campaign, difficultyPick.value);
+  if (mode !== "map") setState(setBattleMath(state, campaign.difficulty, campaign.answerMode));
+  else render();
+});
+answerPick.addEventListener("change", () => {
+  if (!isAnswerMode(answerPick.value)) return;
+  campaign = setAnswerMode(campaign, answerPick.value);
+  if (mode !== "map") setState(setBattleMath(state, campaign.difficulty, campaign.answerMode));
+  else render();
 });
 
 board.element.addEventListener("pointerdown", (event) => {
+  if (mode === "map" || state.phase === "cast") return;
   const cell = board.pick(event);
   if (!cell) return;
   setState(clickTile(state, cell.col, cell.row));
 });
 board.element.addEventListener("pointermove", (event) => {
+  if (mode === "map") return;
   publishHover(board.pick(event));
 });
 board.element.addEventListener("pointerleave", () => publishHover(null));
@@ -258,7 +559,7 @@ for (const [id, style] of Object.entries(manifest.styles ?? {})) {
 stylePick.addEventListener("change", () => {
   manifest.activeStyle = stylePick.value;
   showStyleNote();
-  renderHud();
+  render();
 });
 
 const params = new URLSearchParams(location.search);
@@ -269,42 +570,36 @@ if (requested && manifest.styles?.[requested]) {
 }
 showStyleNote();
 
-if (import.meta.env.DEV && params.has("crowd")) {
-  state = withCrowd(state);
+if (import.meta.env.DEV && (params.has("pressure") || params.has("crowd"))) {
+  mode = "pressure";
+  state = createBattle({ casters: ["mora"], difficulty: campaign.difficulty, answerMode: campaign.answerMode });
+  if (params.has("crowd")) state = withCrowd(state);
   if (params.has("play")) state = scriptedStep(state);
 }
 
 if (import.meta.env.DEV) {
-  board.setProbe((metrics) => {
-    const enemies = state.units.filter((unit) => unit.side === "enemy" && unit.hp > 0).length;
-    probe.dataset.ready = metrics.actors > 0 ? "1" : "0";
-    probe.textContent = JSON.stringify({
-      enemies,
-      actors: metrics.actors,
-      drawCalls: metrics.drawCalls,
-      triangles: metrics.triangles,
-      frameMs: Number(metrics.frameMs.toFixed(2)),
-      phase: state.phase,
-      round: state.round,
-      lastEvent: state.lastEvent,
-      style: manifest.activeStyle || "current",
-      winner: state.winner,
-    });
-  });
+  board.setProbe(() => publishProbe());
 }
 
-renderHud();
+render();
 
 declare global {
   interface Window {
     __ashfield?: {
       state: () => GameState;
+      campaign: () => Campaign;
+      mode: () => Mode;
       click: (col: number, row: number) => void;
       project: (col: number, row: number) => { x: number; y: number };
       crowd: () => void;
       previewChoice: () => void;
       play: (mode: "fight" | "idle") => { winner: GameState["winner"]; round: number; phase: GameState["phase"]; actions: number; events: string[] };
       metrics: () => { actors: number; drawCalls: number; triangles: number; frameMs: number };
+      nudge: () => void;
+      travel: (id: string) => void;
+      answer: (given: number) => void;
+      finishCast: () => void;
+      back: () => void;
     };
   }
 }
@@ -312,26 +607,37 @@ declare global {
 if (import.meta.env.DEV) {
   window.__ashfield = {
     state: () => state,
+    campaign: () => campaign,
+    mode: () => mode,
     click: (col, row) => setState(clickTile(state, col, row)),
     project: (col, row) => board.project(col, row),
-      crowd: () => setState(withCrowd(state)),
-      previewChoice: () => {
-        const pending = state.progression.pending.length
-          ? state.progression.pending
-          : offersFor(state.progression.level, state.progression.taken);
-        setState({ ...state, phase: "level", selectedId: null, progression: { ...state.progression, pending } });
-      },
-      play: (mode) => {
-        const result = mode === "idle" ? playIdle(createBattle()) : playFight(createBattle());
-        setState(result.state);
-        return {
-          winner: result.state.winner,
-          round: result.state.round,
-          phase: result.state.phase,
-          actions: result.actions,
-          events: result.events,
-        };
-      },
-      metrics: () => board.metrics(),
+    crowd: () => {
+      mode = "pressure";
+      showBattle(withCrowd(state.pressure.enabled ? state : createBattle()));
+    },
+    previewChoice: () => {
+      const pending = state.progression.pending.length
+        ? state.progression.pending
+        : offersFor(state.progression.level, state.progression.taken);
+      setState({ ...state, phase: "level", selectedId: null, progression: { ...state.progression, pending } });
+    },
+    play: (playMode) => {
+      const result = playMode === "idle" ? playIdle(createBattle()) : playFight(createBattle());
+      mode = "pressure";
+      setState(result.state);
+      return {
+        winner: result.state.winner,
+        round: result.state.round,
+        phase: result.state.phase,
+        actions: result.actions,
+        events: result.events,
+      };
+    },
+    metrics: () => board.metrics(),
+      nudge: () => setState(stepBattle(state)),
+      travel: (id) => enter(id),
+    answer: (given) => setState(answerCast(state, given)),
+    finishCast: () => setState(finishCast(state)),
+    back: () => backToMap(),
   };
 }

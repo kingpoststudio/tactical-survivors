@@ -1,3 +1,4 @@
+import { gradeAnswer, makeProblem, SPELL_RANGE, type AnswerMode, type Difficulty, type MathProblem } from "./mathcast.ts";
 import { lastPressureRound, planReinforcements, waveForRound, type PressureRules, PRESSURE_DEFAULTS } from "./pressure.ts";
 import {
   acceptBuild,
@@ -41,9 +42,18 @@ const BRUSH: ReadonlyArray<readonly [number, number]> = [
 ];
 
 export type Side = "player" | "enemy";
-export type Phase = "player" | "enemy" | "level" | "victory";
-export type Intent = "move" | "strike";
+export type Phase = "player" | "enemy" | "level" | "victory" | "cast";
+export type Intent = "move" | "strike" | "cast";
 export type Terrain = "plain" | "brush" | "stone";
+
+export interface SpellCast {
+  casterId: string;
+  targetId: string;
+  problem: MathProblem;
+  outcome: "open" | "hit" | "fizzle";
+  given: number | null;
+  damage: number;
+}
 
 export interface Tile {
   col: number;
@@ -79,11 +89,22 @@ export interface GameState {
   spawnedRounds: number[];
   progression: ProgressionState;
   progressionRules: ProgressionRules;
+  casters: string[];
+  difficulty: Difficulty;
+  answerMode: AnswerMode;
+  spell: SpellCast | null;
+  random: () => number;
 }
 
 export interface BattleOptions {
   pressure?: PressureRules;
   progression?: ProgressionRules;
+  progressionState?: ProgressionState;
+  units?: readonly Unit[];
+  casters?: readonly string[];
+  difficulty?: Difficulty;
+  answerMode?: AnswerMode;
+  random?: () => number;
 }
 
 export interface Reach {
@@ -139,6 +160,8 @@ export function blurb(role: string): string {
       return "Pointed hat, and the hardest hit.";
     case "Scout":
       return "Long stride, no armor.";
+    case "Friend":
+      return "A small ally.";
     case "Brute":
       return "Slow, and hard to drop.";
     case "Raider":
@@ -150,11 +173,17 @@ export function blurb(role: string): string {
   }
 }
 
+export function openingRoster(): Unit[] {
+  return ROSTER.map((unit) => ({ ...unit, hp: unit.maxHp, acted: false }));
+}
+
 export function createBattle(options: BattleOptions = {}): GameState {
   const pressure = options.pressure ?? PRESSURE_DEFAULTS;
   const progressionRules = options.progression ?? PROGRESSION_DEFAULTS;
+  const seeded = options.progressionState;
+  const units = (options.units ?? openingRoster()).map((unit) => ({ ...unit, acted: false }));
   return {
-    units: ROSTER.map((unit) => ({ ...unit, hp: unit.maxHp, acted: false })),
+    units,
     phase: "player",
     winner: null,
     selectedId: null,
@@ -164,8 +193,15 @@ export function createBattle(options: BattleOptions = {}): GameState {
     enemyStep: 0,
     pressure,
     spawnedRounds: [],
-    progression: freshProgression(),
+    progression: seeded
+      ? { xp: seeded.xp, level: seeded.level, taken: [...seeded.taken], pending: [] }
+      : freshProgression(),
     progressionRules,
+    casters: [...(options.casters ?? [])],
+    difficulty: options.difficulty ?? "within-5",
+    answerMode: options.answerMode ?? "choice",
+    spell: null,
+    random: options.random ?? Math.random,
   };
 }
 
@@ -178,6 +214,99 @@ export function winnerOf(g: GameState): Side | null {
   const last = lastPressureRound(g.pressure);
   if (g.spawnedRounds.includes(last) && g.round >= last) return "player";
   return null;
+}
+
+export function inSpellRange(caster: Pick<Unit, "col" | "row">, target: Pick<Unit, "col" | "row">): boolean {
+  const steps = Math.abs(caster.col - target.col) + Math.abs(caster.row - target.row);
+  return steps > 0 && steps <= SPELL_RANGE;
+}
+
+export function spellTargetIds(g: GameState): string[] {
+  const actor = commandingUnit(g);
+  if (!actor || !g.casters.includes(actor.id)) return [];
+  return living(g.units)
+    .filter((unit) => unit.side === "enemy" && inSpellRange(actor, unit))
+    .map((unit) => unit.id);
+}
+
+export function beginCast(g: GameState, targetId: string, rng: () => number = g.random): GameState {
+  if (g.phase !== "player") return g;
+  const actor = commandingUnit(g);
+  if (!actor || !g.casters.includes(actor.id)) return g;
+  const target = living(g.units).find((unit) => unit.id === targetId && unit.side === "enemy");
+  if (!target || !inSpellRange(actor, target)) return g;
+  return {
+    ...g,
+    phase: "cast",
+    intent: "cast",
+    spell: {
+      casterId: actor.id,
+      targetId: target.id,
+      problem: makeProblem(g.difficulty, rng),
+      outcome: "open",
+      given: null,
+      damage: 0,
+    },
+  };
+}
+
+export function armCast(g: GameState, rng: () => number = g.random): GameState {
+  const ids = spellTargetIds(g);
+  if (ids.length === 0) return g;
+  if (ids.length === 1) return beginCast(g, ids[0], rng);
+  const actor = commandingUnit(g);
+  return { ...g, intent: "cast", lastEvent: actor ? `${actor.name} can cast.` : g.lastEvent };
+}
+
+export function answerCast(g: GameState, given: number): GameState {
+  if (g.phase !== "cast" || !g.spell || g.spell.outcome !== "open") return g;
+  const verdict = gradeAnswer(g.spell.problem, given);
+  if (!verdict) return g;
+  const caster = g.units.find((unit) => unit.id === g.spell?.casterId);
+  const target = g.units.find((unit) => unit.id === g.spell?.targetId);
+  if (!caster || !target) return g;
+  const prompt = g.spell.problem.prompt;
+  if (!verdict.correct) {
+    return {
+      ...g,
+      spell: { ...g.spell, outcome: "fizzle", given, damage: verdict.damage },
+      lastEvent: `${caster.name} casts Spark. ${prompt}. Fizzle.`,
+    };
+  }
+  const damage = g.spell.problem.answer;
+  const hp = Math.max(0, target.hp - damage);
+  const units = g.units.map((unit) => (unit.id === target.id ? { ...unit, hp } : unit));
+  const lastEvent =
+    hp === 0
+      ? `${caster.name} casts Spark. ${prompt} = ${damage}. ${target.name} falls.`
+      : `${caster.name} casts Spark. ${prompt} = ${damage}. ${target.name} takes ${damage}.`;
+  return {
+    ...g,
+    units,
+    spell: { ...g.spell, outcome: "hit", given, damage },
+    lastEvent,
+  };
+}
+
+export function finishCast(g: GameState): GameState {
+  if (g.phase !== "cast" || !g.spell || g.spell.outcome === "open") return g;
+  const target = g.units.find((unit) => unit.id === g.spell?.targetId);
+  const killed = g.spell.outcome === "hit" && !!target && target.hp <= 0;
+  const xp =
+    g.spell.outcome === "hit" && g.progressionRules.enabled
+      ? g.progressionRules.xpPerHit + (killed ? g.progressionRules.xpPerKill : 0)
+      : 0;
+  return withXp(
+    { ...g, phase: "player", spell: null, intent: "move" },
+    g.units,
+    xp,
+    g.lastEvent,
+    g.spell.casterId,
+  );
+}
+
+export function setBattleMath(g: GameState, difficulty: Difficulty, answerMode: AnswerMode): GameState {
+  return { ...g, difficulty, answerMode };
 }
 
 export function strikeDamage(attacker: Unit, defender: Unit, taken: readonly BuildId[], coverDefense: number): number {
@@ -576,10 +705,15 @@ export function scriptedStep(g: GameState): GameState {
 }
 
 export function clickTile(g: GameState, col: number, row: number): GameState {
-  if (g.phase === "victory" || g.phase === "level") return g;
+  if (g.phase === "victory" || g.phase === "level" || g.phase === "cast") return g;
   const occupant = at(g.units, col, row);
   if (g.phase === "enemy") return occupant ? { ...g, selectedId: occupant.id } : g;
   const actor = commandingUnit(g);
+  if (actor && g.intent === "cast") {
+    if (occupant?.id === actor.id) return { ...g, intent: "move", lastEvent: `${actor.name} holds the spell.` };
+    if (occupant && occupant.side === "enemy" && inSpellRange(actor, occupant)) return beginCast(g, occupant.id);
+    return g;
+  }
   if (actor && g.intent === "strike") {
     if (occupant?.id === actor.id) {
       return settle({
@@ -612,6 +746,12 @@ export function clickTile(g: GameState, col: number, row: number): GameState {
       );
       if (foes.length > 0) {
         return { ...g, units, selectedId: actor.id, intent: "strike", lastEvent: `${actor.name} can strike.` };
+      }
+      const spellReady =
+        g.casters.includes(actor.id) &&
+        living(units).some((unit) => unit.side === "enemy" && inSpellRange(moved, unit));
+      if (spellReady) {
+        return { ...g, units, selectedId: actor.id, intent: "cast", lastEvent: `${actor.name} can cast.` };
       }
       return settle({
         ...g,
@@ -646,9 +786,15 @@ export function pickUnit(g: GameState, id: string): GameState {
 
 export function promptFor(g: GameState): string | null {
   if (g.phase === "victory") return null;
+  if (g.phase === "cast" && g.spell) {
+    if (g.spell.outcome === "fizzle") return "Fizzle.";
+    if (g.spell.outcome === "hit") return `Spark deals ${g.spell.damage}.`;
+    return g.spell.problem.caption;
+  }
   if (g.phase === "level") return "Choose one skill or item. The turn waits.";
   if (g.phase === "enemy") return "Ash host is moving.";
   const actor = commandingUnit(g);
+  if (actor && g.intent === "cast") return "Click a foe to cast Spark.";
   if (actor && g.intent === "strike") return "Click a foe in a red ring to strike, or click this unit again to hold.";
   if (actor) return "Click a highlighted tile to move, or a foe in a red ring to strike.";
   return "Click an Amber unit.";
@@ -686,8 +832,11 @@ export function describeHover(args: {
     bits.push(`${unit.name}, ${unit.role}, ${unit.hp}/${unit.maxHp}${tier}`);
   }
   if (commanding && unit && attackIds.has(unit.id)) {
-    const dmg = strikeDamage(commanding, unit, taken, coverDefense);
-    bits.push(unit.hp <= dmg ? `Strike deals ${dmg}, a killing blow` : `Strike deals ${dmg}`);
+    if (intent === "cast") bits.push("Spark. The answer is the damage.");
+    else {
+      const dmg = strikeDamage(commanding, unit, taken, coverDefense);
+      bits.push(unit.hp <= dmg ? `Strike deals ${dmg}, a killing blow` : `Strike deals ${dmg}`);
+    }
   }
   const inRange =
     commanding !== null && intent === "move" && !unit && reach.cost.has(code) && code !== tileKey(commanding.col, commanding.row);
@@ -718,6 +867,10 @@ export function attackIdsFor(g: GameState, reach: Reach): Set<string> {
   const ids = new Set<string>();
   const commanding = commandingUnit(g);
   if (!commanding) return ids;
+  if (g.intent === "cast") {
+    for (const id of spellTargetIds(g)) ids.add(id);
+    return ids;
+  }
   const reachForStrike = g.intent === "strike" ? hereReach(commanding) : reach;
   for (const foe of living(g.units)) {
     if (foe.side === "enemy" && strikeTiles(commanding, foe, g.units, reachForStrike).length > 0) ids.add(foe.id);
