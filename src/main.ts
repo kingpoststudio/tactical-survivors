@@ -12,6 +12,9 @@ import {
   equip,
   KITS,
   linked,
+  offerWager,
+  settleWager,
+  WAGER_STAKE,
   nodeById,
   recruit,
   returnFromBattle,
@@ -309,8 +312,60 @@ function renderMap() {
       campaign = recruit(campaign);
       render();
     });
-    shop.append(bun, ally);
+    const bet = document.createElement("button");
+    bet.type = "button";
+    bet.dataset.wager = "gold";
+    bet.textContent = `Wager · ${WAGER_STAKE}`;
+    bet.disabled = campaign.gold < WAGER_STAKE || campaign.wager?.outcome === "open";
+    bet.addEventListener("click", () => {
+      campaign = offerWager(campaign);
+      render();
+    });
+    shop.append(bun, ally, bet);
     map.append(shop);
+    const wager = campaign.wager;
+    if (wager?.outcome === "open") {
+      const card = document.createElement("div");
+      card.id = "wager";
+      const problem = document.createElement("p");
+      problem.className = "wager-problem";
+      problem.textContent = wager.problem.prompt;
+      card.append(problem);
+      if (campaign.answerMode === "choice") {
+        const choices = document.createElement("div");
+        choices.className = "wager-choices";
+        for (const choice of wager.problem.choices) {
+          const pick = document.createElement("button");
+          pick.type = "button";
+          pick.className = "choice";
+          pick.textContent = String(choice);
+          pick.addEventListener("click", () => {
+            campaign = settleWager(campaign, choice);
+            render();
+          });
+          choices.append(pick);
+        }
+        card.append(choices);
+      } else {
+        const form = document.createElement("form");
+        const input = document.createElement("input");
+        input.inputMode = "numeric";
+        input.autocomplete = "off";
+        const submit = document.createElement("button");
+        submit.type = "submit";
+        submit.textContent = "OK";
+        form.append(input, submit);
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+          const text = input.value.trim();
+          if (!/^-?\d+$/.test(text)) return;
+          campaign = settleWager(campaign, Number(text));
+          render();
+        });
+        card.append(form);
+      }
+      map.append(card);
+    }
   }
   if (campaign.stash.length > 0) {
     const gear = document.createElement("div");
@@ -321,7 +376,8 @@ function renderMap() {
         button.type = "button";
         button.dataset.equip = kit;
         button.dataset.ally = ally.id;
-        button.textContent = `${KITS[kit].name} · ${ally.name}`;
+        const favor = campaign.favors[kit];
+        button.textContent = favor ? `${KITS[kit].name} · ${favor} · ${ally.name}` : `${KITS[kit].name} · ${ally.name}`;
         button.addEventListener("click", () => {
           campaign = equip(campaign, ally.id, kit);
           render();

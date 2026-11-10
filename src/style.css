@@ -242,9 +242,22 @@ button:disabled {
   gap: 8px;
 }
 
-#shop button {
+#shop button,
+#wager .choice {
   min-height: 48px;
   font-size: 16px;
+}
+
+.wager-problem {
+  margin: 0;
+  font-size: 40px;
+  font-weight: 700;
+}
+
+.wager-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 #view {

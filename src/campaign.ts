@@ -1,6 +1,6 @@
-import { freshProgression, type BuildId, type ProgressionState } from "./progression.ts";
+import { BUILD_POOL, freshProgression, type BuildId, type ProgressionState } from "./progression.ts";
 import { createBattle, openingRoster, type GameState, type Unit } from "./game.ts";
-import { type AnswerMode, type Difficulty } from "./mathcast.ts";
+import { gradeAnswer, makeProblem, type AnswerMode, type Difficulty, type MathProblem } from "./mathcast.ts";
 
 export const BATTLE_GOLD = 5;
 export const BUN_COST = 2;
@@ -16,7 +16,11 @@ export const REWARD_GOLD = 2;
 export const PACE_ESTIMATE = { activeFightMinutes: 5, fightsPerRun: 8 } as const;
 
 export type NodeKind = "camp" | "battle" | "reward" | "town" | "setup";
-export type KitId = "ember" | "band";
+export type KitId = "ember" | "band" | "spear";
+export const CLASS_OUTCOMES = ["Warden", "Sorceress", "Scout"] as const;
+export type ClassOutcome = (typeof CLASS_OUTCOMES)[number];
+export const WEAPON_OUTCOMES: readonly KitId[] = ["ember", "band", "spear"];
+export const WAGER_STAKE = 2;
 
 export interface WorldNode {
   id: string;
@@ -33,10 +37,11 @@ export const WORLD: readonly WorldNode[] = [
   { id: "town", name: "Town", kind: "town", links: ["shrine", "glen"] },
 ];
 
-/** Ember favors a sorceress. Band favors a warden. Either can be worn by any ally. */
-export const KITS: Record<KitId, { name: string; favors: string; slot: "ability" | "equip" }> = {
+/** A kit may favor a class. Any ally can still wear it. */
+export const KITS: Record<KitId, { name: string; favors: ClassOutcome; slot: "ability" | "equip" }> = {
   ember: { name: "Ember", favors: "Sorceress", slot: "ability" },
   band: { name: "Band", favors: "Warden", slot: "equip" },
+  spear: { name: "Spear", favors: "Scout", slot: "equip" },
 };
 
 export interface Ally {
@@ -52,7 +57,19 @@ export interface Ally {
   row: number;
   spell: boolean;
   ability: "ember" | null;
-  equip: "band" | null;
+  equip: "band" | "spear" | null;
+}
+
+export interface DropRoll {
+  weapon: KitId | null;
+  favor: ClassOutcome;
+  build: BuildId | null;
+}
+
+export interface Wager {
+  stake: number;
+  problem: MathProblem;
+  outcome: "open" | "won" | "lost";
 }
 
 export interface Campaign {
@@ -68,6 +85,10 @@ export interface Campaign {
   answerMode: AnswerMode;
   lastEvent: string;
   stash: KitId[];
+  /** Rolled class for a kit. It does not block equipping. */
+  favors: Partial<Record<KitId, ClassOutcome>>;
+  /** A stake of game gold. Never real money. */
+  wager: Wager | null;
 }
 
 export type TravelResult =
@@ -138,6 +159,8 @@ export function createCampaign(): Campaign {
     answerMode: "choice",
     lastEvent: "Camp.",
     stash: [],
+    favors: {},
+    wager: null,
   };
 }
 
@@ -161,7 +184,7 @@ function toUnit(ally: Ally): Unit {
     row: ally.row,
     hp: ally.hp,
     maxHp: ally.maxHp,
-    atk: ally.atk,
+    atk: ally.atk + (ally.equip === "spear" ? 1 : 0),
     def: ally.def + (ally.equip === "band" ? 1 : 0),
     mov: ally.mov,
     acted: false,
@@ -216,16 +239,47 @@ export function travel(campaign: Campaign, nodeId: string): TravelResult {
   return { kind: "map", campaign: next };
 }
 
-export function dropsFor(defeated: number, owned: readonly KitId[]): KitId[] {
-  const gained: KitId[] = [];
-  let left = Math.max(0, defeated);
-  for (const id of ["ember", "band"] as const) {
-    if (left <= 0) break;
-    if (owned.includes(id)) continue;
-    gained.push(id);
-    left -= 1;
+function pick<T>(items: readonly T[], rng: () => number): T {
+  return items[Math.floor(rng() * items.length)];
+}
+
+/** One defeated monster. The class, weapon, and build are a roll, not a fixed path. */
+export function rollDrop(rng: () => number, owned: readonly KitId[], taken: readonly BuildId[]): DropRoll | null {
+  const weapons = WEAPON_OUTCOMES.filter((id) => !owned.includes(id));
+  const builds = BUILD_POOL.map((offer) => offer.id).filter((id) => !taken.includes(id));
+  if (weapons.length === 0 && builds.length === 0) return null;
+  return {
+    weapon: weapons.length > 0 ? pick(weapons, rng) : null,
+    favor: pick(CLASS_OUTCOMES, rng),
+    build: builds.length > 0 ? pick(builds, rng) : null,
+  };
+}
+
+export function collectDrops(
+  defeated: number,
+  owned: readonly KitId[],
+  taken: readonly BuildId[],
+  rng: () => number,
+): { kits: KitId[]; favors: Partial<Record<KitId, ClassOutcome>>; builds: BuildId[] } {
+  const have = [...owned];
+  const known = [...taken];
+  const kits: KitId[] = [];
+  const favors: Partial<Record<KitId, ClassOutcome>> = {};
+  const builds: BuildId[] = [];
+  for (let index = 0; index < defeated; index++) {
+    const drop = rollDrop(rng, have, known);
+    if (!drop) break;
+    if (drop.weapon && !have.includes(drop.weapon)) {
+      kits.push(drop.weapon);
+      have.push(drop.weapon);
+      favors[drop.weapon] = drop.favor;
+    }
+    if (drop.build && !known.includes(drop.build)) {
+      builds.push(drop.build);
+      known.push(drop.build);
+    }
   }
-  return gained;
+  return { kits, favors, builds };
 }
 
 function ownedKits(campaign: Campaign): KitId[] {
@@ -247,9 +301,21 @@ export function equip(campaign: Campaign, allyId: string, kit: KitId): Campaign 
   if (previous) stash.push(previous);
   const party = campaign.party.map((item) => {
     if (item.id !== allyId) return item;
-    return slot === "ability" ? { ...item, ability: "ember" as const } : { ...item, equip: "band" as const };
+    if (slot === "ability") return { ...item, ability: "ember" as const };
+    return { ...item, equip: kit === "spear" ? ("spear" as const) : ("band" as const) };
   });
   return { ...campaign, stash, party };
+}
+
+function applyAllyBuild(party: readonly Ally[], id: BuildId): Ally[] {
+  return party.map((ally) => {
+    if (ally.hp <= 0) return ally;
+    if (id === "long-stride") return { ...ally, mov: ally.mov + 1 };
+    if (id === "focused-strike") return { ...ally, atk: ally.atk + 2 };
+    if (id === "ward-plate") return { ...ally, def: ally.def + 1 };
+    if (id === "field-kit") return { ...ally, maxHp: ally.maxHp + 3, hp: ally.hp + 3 };
+    return ally;
+  });
 }
 
 function restored(party: readonly Ally[], units: readonly Unit[]): Ally[] {
@@ -257,20 +323,33 @@ function restored(party: readonly Ally[], units: readonly Unit[]): Ally[] {
     const unit = units.find((item) => item.id === ally.id);
     if (!unit) return { ...ally, hp: ally.maxHp };
     const band = ally.equip === "band" ? 1 : 0;
-    return { ...ally, maxHp: unit.maxHp, hp: unit.maxHp, atk: unit.atk, def: unit.def - band, mov: unit.mov };
+    const spear = ally.equip === "spear" ? 1 : 0;
+    return {
+      ...ally,
+      maxHp: unit.maxHp,
+      hp: unit.maxHp,
+      atk: unit.atk - spear,
+      def: unit.def - band,
+      mov: unit.mov,
+    };
   });
 }
 
-export function returnFromBattle(campaign: Campaign, battle: GameState): Campaign {
+export function returnFromBattle(campaign: Campaign, battle: GameState, rng: () => number = Math.random): Campaign {
   if (battle.phase !== "victory") return campaign;
   const defeated = battle.units.filter((unit) => unit.side === "enemy" && unit.hp <= 0).length;
-  const carried = {
+  const dropped = collectDrops(defeated, ownedKits(campaign), battle.progression.taken, rng);
+  let party = battle.winner === "player" ? restored(campaign.party, battle.units) : campaign.party;
+  for (const id of dropped.builds) party = applyAllyBuild(party, id);
+  const carried: Campaign = {
     ...campaign,
-    stash: [...campaign.stash, ...dropsFor(defeated, ownedKits(campaign))],
+    stash: [...campaign.stash, ...dropped.kits],
+    favors: { ...campaign.favors, ...dropped.favors },
+    party,
     progression: {
       xp: battle.progression.xp,
       level: battle.progression.level,
-      taken: [...battle.progression.taken],
+      taken: [...battle.progression.taken, ...dropped.builds],
       pending: [],
     },
   };
@@ -280,9 +359,41 @@ export function returnFromBattle(campaign: Campaign, battle: GameState): Campaig
   return {
     ...carried,
     gold,
-    party: restored(campaign.party, battle.units),
     cleared,
     lastEvent: `Clear. ${campaign.gold} + ${BATTLE_GOLD} = ${gold}.`,
+  };
+}
+
+/** Stake game gold on a math problem. A wrong answer spends the stake and never pays the typed number. */
+export function offerWager(campaign: Campaign, rng: () => number = Math.random): Campaign {
+  if (campaign.nodeId !== "town" || campaign.wager?.outcome === "open" || campaign.gold < WAGER_STAKE) return campaign;
+  return {
+    ...campaign,
+    wager: { stake: WAGER_STAKE, problem: makeProblem(campaign.difficulty, rng), outcome: "open" },
+  };
+}
+
+export function settleWager(campaign: Campaign, given: number): Campaign {
+  const wager = campaign.wager;
+  if (!wager || wager.outcome !== "open" || campaign.gold < wager.stake) return campaign;
+  const grade = gradeAnswer(wager.problem, given);
+  if (!grade) return campaign;
+  const spent = campaign.gold - wager.stake;
+  if (!grade.correct) {
+    return {
+      ...campaign,
+      gold: spent,
+      wager: { ...wager, outcome: "lost" },
+      lastEvent: `${campaign.gold} − ${wager.stake} = ${spent}.`,
+    };
+  }
+  const payout = wager.stake + wager.stake;
+  const gold = spent + payout;
+  return {
+    ...campaign,
+    gold,
+    wager: { ...wager, outcome: "won" },
+    lastEvent: `${spent} + ${payout} = ${gold}.`,
   };
 }
 

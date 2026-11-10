@@ -9,6 +9,10 @@ import {
   createCampaign,
   equip,
   linked,
+  offerWager,
+  rollDrop,
+  settleWager,
+  WAGER_STAKE,
   recruit,
   returnFromBattle,
   setAnswerMode,
@@ -146,16 +150,19 @@ fought = {
   progression: { xp: 1, level: 1, taken: ["long-stride"], pending: [] },
   units: fought.units.map((unit) => (unit.side === "enemy" ? { ...unit, hp: 0 } : unit)),
 };
-carried = returnFromBattle(carried, fought);
+carried = returnFromBattle(carried, fought, () => 0);
 assert.equal(carried.progression.level, 1);
-assert.deepEqual(carried.progression.taken, ["long-stride"]);
-assert.deepEqual(carried.stash, ["ember", "band"]);
+assert.deepEqual(carried.progression.taken, ["long-stride", "brush-cover", "focused-strike", "ward-plate"]);
+assert.deepEqual(carried.stash, ["ember", "band", "spear"]);
+assert.equal(carried.favors.ember, "Warden");
+assert.equal(carried.party.find((ally) => ally.id === "ilya")?.atk, 6);
+assert.equal(carried.party.find((ally) => ally.id === "ilya")?.def, 3);
 carried = equip(carried, "ilya", "ember");
 carried = equip(carried, "ilya", "band");
 assert.equal(carried.party.find((ally) => ally.id === "ilya")?.role, "Warden");
 assert.equal(carried.party.find((ally) => ally.id === "ilya")?.ability, "ember");
 assert.equal(carried.party.find((ally) => ally.id === "ilya")?.equip, "band");
-assert.equal(carried.stash.length, 0);
+assert.deepEqual(carried.stash, ["spear"]);
 carried = buyBun({ ...carried, nodeId: "town", gold: 5 });
 assert.equal(carried.bunBought, true);
 assert.equal(carried.gold, 3);
@@ -169,9 +176,10 @@ if (again.kind !== "battle") throw new Error("glen should reach the meadow");
 assert.equal(again.campaign.bunBought, true);
 assert.equal(again.campaign.gold, 3);
 assert.equal(again.battle.progression.level, 1);
-assert.deepEqual(again.battle.progression.taken, ["long-stride"]);
+assert.deepEqual(again.battle.progression.taken, ["long-stride", "brush-cover", "focused-strike", "ward-plate"]);
 assert.equal(again.battle.units.find((unit) => unit.id === "ilya")?.ability, "ember");
-assert.equal(again.battle.units.find((unit) => unit.id === "ilya")?.def, 3);
+assert.equal(again.battle.units.find((unit) => unit.id === "ilya")?.def, 4);
+assert.equal(again.battle.units.find((unit) => unit.id === "ilya")?.atk, 6);
 assert.equal(again.battle.units.find((unit) => unit.id === "mora")?.maxHp, 10);
 
 let oak = again.battle;
@@ -201,5 +209,41 @@ assert.equal(kept.gold, again.campaign.gold);
 assert.equal(kept.bunBought, true);
 assert.equal(kept.progression.level, 1);
 assert.equal(kept.party.find((ally) => ally.id === "ilya")?.ability, "ember");
+
+const first = rollDrop(() => 0, [], []);
+const second = rollDrop(() => 0.9, [], []);
+assert.ok(first && second);
+assert.equal(first?.weapon, "ember");
+assert.equal(first?.favor, "Warden");
+assert.equal(first?.build, "long-stride");
+assert.equal(second?.weapon, "spear");
+assert.equal(second?.favor, "Scout");
+assert.notEqual(first?.weapon, second?.weapon);
+assert.notEqual(first?.favor, second?.favor);
+
+const cross = equip(
+  { ...createCampaign(), stash: ["ember"], favors: { ember: "Sorceress" } },
+  "ilya",
+  "ember",
+);
+assert.equal(cross.favors.ember, "Sorceress");
+assert.equal(cross.party.find((ally) => ally.id === "ilya")?.role, "Warden");
+assert.equal(cross.party.find((ally) => ally.id === "ilya")?.ability, "ember");
+assert.equal(startBattle(cross).units.find((unit) => unit.id === "ilya")?.ability, "ember");
+
+const broke = offerWager({ ...createCampaign(), nodeId: "town", gold: 1 }, () => 0);
+assert.equal(broke.wager, null);
+assert.equal(broke.gold, 1);
+const table = offerWager({ ...createCampaign(), nodeId: "town", gold: 5 }, () => 0);
+assert.equal(table.wager?.stake, WAGER_STAKE);
+assert.equal(table.wager?.problem.answer, 1);
+assert.equal(table.gold, 5);
+const miss = settleWager(table, 99);
+assert.equal(miss.gold, 3);
+assert.notEqual(miss.gold, 5 - WAGER_STAKE + 99);
+assert.equal(miss.wager?.outcome, "lost");
+const hit = settleWager(table, 1);
+assert.equal(hit.gold, 7);
+assert.equal(hit.wager?.outcome, "won");
 
 console.log("map rewards ok");
