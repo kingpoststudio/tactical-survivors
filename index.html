@@ -43,17 +43,25 @@
       </div>
       <div id="stage">
         <div id="map"></div>
-        <div id="view" hidden></div>
-        <div id="cast-panel" hidden>
-          <p id="problem"></p>
-          <p id="caption"></p>
-          <p id="cast-note"></p>
-          <div id="choices"></div>
-          <form id="typed-form">
-            <label>Answer <input id="typed-answer" inputmode="numeric" autocomplete="off" /></label>
-            <button type="submit">Cast</button>
-          </form>
-          <button id="cast-continue" type="button" hidden>Continue</button>
+        <div id="view" hidden>
+          <div id="dock">
+            <div id="cast-panel" hidden>
+              <p id="problem"></p>
+              <p id="caption"></p>
+              <p id="cast-note"></p>
+              <div id="choices"></div>
+              <form id="typed-form">
+                <label>Answer <input id="typed-answer" inputmode="numeric" autocomplete="off" /></label>
+                <button type="submit">OK</button>
+              </form>
+              <button id="cast-continue" type="button" hidden>OK</button>
+            </div>
+            <div id="act-menu" hidden>
+              <button id="bump" type="button">Bump</button>
+              <button id="spark" type="button">Spark</button>
+              <button id="wait" type="button">Wait</button>
+            </div>
+          </div>
         </div>
       </div>
       <div id="roster" hidden></div>

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { answerCast, clickTile, createBattle, finishCast } from "./game.ts";
-import { FIZZLE_DAMAGE, gradeAnswer, makeProblem, type Difficulty, type MathProblem } from "./mathcast.ts";
+import { answerCast, clickTile, createBattle, finishCast, finishWalk } from "./game.ts";
+import { FIZZLE_DAMAGE, gradeAnswer, makeProblem, makeStrikeProblem, type Difficulty, type MathProblem } from "./mathcast.ts";
 
 function scripted(values: readonly number[]): () => number {
   let index = 0;
@@ -89,6 +89,15 @@ assert.ok(seen.has("count"));
 assert.ok(seen.has("sum"));
 assert.ok(seen.has("difference"));
 
+const strike = makeStrikeProblem(4, scripted([0]));
+assert.equal(strike.kind, "count");
+assert.equal(strike.prompt, "● ● ● ●");
+assert.equal(strike.answer, 4);
+const bigStrike = makeStrikeProblem(6, scripted([0]));
+assert.equal(bigStrike.kind, "sum");
+assert.equal(bigStrike.prompt, "1 + 5");
+assert.equal(bigStrike.answer, 6);
+
 const typed = gradeAnswer(sum, 99);
 assert.deepEqual(typed, { correct: false, damage: 0 });
 assert.notEqual(typed?.damage, 99);
@@ -100,14 +109,15 @@ let game = createBattle({
   random: scripted([0, 0]),
 });
 game = clickTile(game, 3, 6);
-game = clickTile(game, 3, 3);
+game = finishWalk(clickTile(game, 3, 3));
 assert.equal(game.units.find((unit) => unit.id === "mora")?.col, 3);
 assert.equal(game.units.find((unit) => unit.id === "mora")?.row, 3);
-assert.equal(game.intent, "cast");
+assert.equal(game.intent, "act");
+assert.equal(game.spell?.kind, "spark");
 assert.equal(game.phase, "player");
 
 const cast = clickTile(game, 4, 0);
-assert.equal(cast.phase, "cast");
+assert.equal(cast.phase, "player");
 assert.equal(cast.spell?.targetId, "ruck");
 assert.equal(cast.spell?.problem.prompt, "●");
 assert.equal(cast.spell?.problem.answer, 1);
@@ -138,7 +148,7 @@ let hit = createBattle({
   random: () => 0,
 });
 hit = clickTile(hit, 3, 6);
-hit = clickTile(hit, 3, 3);
+hit = finishWalk(clickTile(hit, 3, 3));
 hit = beginFrom(hit);
 const boulder = hit.units.find((unit) => unit.id === "ash");
 assert.ok(boulder);

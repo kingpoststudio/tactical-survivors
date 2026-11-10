@@ -1,4 +1,4 @@
-import { gradeAnswer, makeProblem, SPELL_RANGE, type AnswerMode, type Difficulty, type MathProblem } from "./mathcast.ts";
+import { gradeAnswer, makeProblem, makeStrikeProblem, SPELL_RANGE, type AnswerMode, type Difficulty, type MathProblem } from "./mathcast.ts";
 import { lastPressureRound, planReinforcements, waveForRound, type PressureRules, PRESSURE_DEFAULTS } from "./pressure.ts";
 import {
   acceptBuild,
@@ -43,10 +43,12 @@ const BRUSH: ReadonlyArray<readonly [number, number]> = [
 
 export type Side = "player" | "enemy";
 export type Phase = "player" | "enemy" | "level" | "victory" | "cast";
-export type Intent = "move" | "strike" | "cast";
+export type Intent = "move" | "act" | "strike" | "cast";
+export type ActionKind = "bump" | "spark";
 export type Terrain = "plain" | "brush" | "stone";
 
 export interface SpellCast {
+  kind: ActionKind;
   casterId: string;
   targetId: string;
   problem: MathProblem;
@@ -93,6 +95,12 @@ export interface GameState {
   difficulty: Difficulty;
   answerMode: AnswerMode;
   spell: SpellCast | null;
+  /** Tiles still left to step onto, one orthogonal tile at a time. */
+  walk: Tile[];
+  /** Enemy whose problem is on screen. */
+  focusId: string | null;
+  /** The move is finished, so Wait can end the turn. */
+  committed: boolean;
   random: () => number;
 }
 
@@ -201,6 +209,9 @@ export function createBattle(options: BattleOptions = {}): GameState {
     difficulty: options.difficulty ?? "within-5",
     answerMode: options.answerMode ?? "choice",
     spell: null,
+    walk: [],
+    focusId: null,
+    committed: false,
     random: options.random ?? Math.random,
   };
 }
@@ -229,48 +240,148 @@ export function spellTargetIds(g: GameState): string[] {
     .map((unit) => unit.id);
 }
 
-export function beginCast(g: GameState, targetId: string, rng: () => number = g.random): GameState {
-  if (g.phase !== "player") return g;
-  const actor = commandingUnit(g);
-  if (!actor || !g.casters.includes(actor.id)) return g;
-  const target = living(g.units).find((unit) => unit.id === targetId && unit.side === "enemy");
-  if (!target || !inSpellRange(actor, target)) return g;
+function beside(a: Pick<Unit, "col" | "row">, b: Pick<Unit, "col" | "row">): boolean {
+  return Math.abs(a.col - b.col) + Math.abs(a.row - b.row) === 1;
+}
+
+export function bumpTargets(g: GameState, actor: Unit): Unit[] {
+  return living(g.units).filter((unit) => unit.side === "enemy" && beside(actor, unit));
+}
+
+export function sparkTargets(g: GameState, actor: Unit): Unit[] {
+  if (!g.casters.includes(actor.id)) return [];
+  return living(g.units).filter((unit) => unit.side === "enemy" && inSpellRange(actor, unit));
+}
+
+function readyStriker(g: GameState): Unit | null {
+  return living(g.units).find((unit) => unit.side === "player" && !unit.acted) ?? null;
+}
+
+function openProblem(g: GameState, actor: Unit, foe: Unit, kind: ActionKind): SpellCast {
+  const problem =
+    kind === "bump"
+      ? makeStrikeProblem(strikeDamage(actor, foe, g.progression.taken, g.progressionRules.coverDefense), g.random)
+      : makeProblem(g.difficulty, g.random);
+  return { kind, casterId: actor.id, targetId: foe.id, problem, outcome: "open", given: null, damage: 0 };
+}
+
+/** The problem can be answered. A preview stays on screen either way. */
+export function mathReady(g: GameState): boolean {
+  const spell = g.spell;
+  if (!spell || spell.outcome !== "open") return false;
+  if (g.phase !== "player" && g.phase !== "cast") return false;
+  const actor = g.units.find((unit) => unit.id === spell.casterId);
+  const foe = living(g.units).find((unit) => unit.id === spell.targetId && unit.side === "enemy");
+  if (!actor || !foe || actor.hp <= 0 || actor.acted || actor.side !== "player") return false;
+  if (g.selectedId !== actor.id) return false;
+  if (spell.kind === "bump") return beside(actor, foe);
+  return g.casters.includes(actor.id) && inSpellRange(actor, foe);
+}
+
+export function showFoe(g: GameState, id: string): GameState {
+  const foe = living(g.units).find((unit) => unit.id === id && unit.side === "enemy");
+  if (!foe) return g;
+  const actor = g.phase === "player" ? commandingUnit(g) : null;
+  const striker = actor ?? readyStriker(g);
+  if (!striker) return { ...g, focusId: id, selectedId: id };
+  const sparkOk = !!actor && sparkTargets(g, actor).some((unit) => unit.id === id);
+  const bumpOk = !!actor && bumpTargets(g, actor).some((unit) => unit.id === id);
+  const kind: ActionKind = sparkOk && !bumpOk ? "spark" : "bump";
   return {
     ...g,
-    phase: "cast",
-    intent: "cast",
-    spell: {
-      casterId: actor.id,
-      targetId: target.id,
-      problem: makeProblem(g.difficulty, rng),
-      outcome: "open",
-      given: null,
-      damage: 0,
-    },
+    selectedId: actor ? actor.id : id,
+    focusId: id,
+    spell: openProblem(g, striker, foe, kind),
   };
 }
 
-export function armCast(g: GameState, rng: () => number = g.random): GameState {
-  const ids = spellTargetIds(g);
-  if (ids.length === 0) return g;
-  if (ids.length === 1) return beginCast(g, ids[0], rng);
+function presentChoice(g: GameState): GameState {
   const actor = commandingUnit(g);
-  return { ...g, intent: "cast", lastEvent: actor ? `${actor.name} can cast.` : g.lastEvent };
+  if (!actor) return g;
+  const bumps = bumpTargets(g, actor);
+  const sparks = sparkTargets(g, actor);
+  if (bumps.length === 0 && sparks.length === 0) {
+    return settle({
+      ...g,
+      units: withActed(g.units, actor.id),
+      selectedId: null,
+      focusId: null,
+      spell: null,
+      intent: "move",
+      walk: [],
+      committed: false,
+    });
+  }
+  const kind: ActionKind = bumps.length > 0 ? "bump" : "spark";
+  const foe = (kind === "bump" ? bumps : sparks)[0];
+  return {
+    ...g,
+    intent: "act",
+    committed: true,
+    selectedId: actor.id,
+    focusId: foe.id,
+    walk: [],
+    spell: openProblem(g, actor, foe, kind),
+  };
+}
+
+export function chooseAction(g: GameState, kind: ActionKind | "wait"): GameState {
+  if (g.walk.length > 0) return g;
+  if (g.phase === "victory" || g.phase === "level" || g.phase === "enemy") return g;
+  const base = g.phase === "cast" && g.spell?.outcome === "open" ? { ...g, phase: "player" as const } : g;
+  if (base.phase !== "player") return g;
+  const actor = commandingUnit(base);
+  if (!actor) return g;
+  if (kind === "wait") {
+    if (!base.committed && base.intent !== "act") return base;
+    return settle({
+      ...base,
+      units: withActed(base.units, actor.id),
+      selectedId: null,
+      focusId: null,
+      spell: null,
+      intent: "move",
+      walk: [],
+      committed: false,
+    });
+  }
+  const targets = kind === "bump" ? bumpTargets(base, actor) : sparkTargets(base, actor);
+  if (targets.length === 0) return g;
+  const foe = targets.find((unit) => unit.id === base.focusId) ?? targets[0];
+  return {
+    ...base,
+    intent: base.committed ? "act" : base.intent,
+    selectedId: actor.id,
+    focusId: foe.id,
+    spell: openProblem(base, actor, foe, kind),
+  };
+}
+
+export function beginCast(g: GameState, targetId: string, _rng: () => number = g.random): GameState {
+  void _rng;
+  return chooseAction({ ...g, focusId: targetId }, "spark");
+}
+
+export function armCast(g: GameState, _rng: () => number = g.random): GameState {
+  void _rng;
+  return chooseAction(g, "spark");
 }
 
 export function answerCast(g: GameState, given: number): GameState {
-  if (g.phase !== "cast" || !g.spell || g.spell.outcome !== "open") return g;
+  if (!g.spell || g.spell.outcome !== "open" || !mathReady(g)) return g;
   const verdict = gradeAnswer(g.spell.problem, given);
   if (!verdict) return g;
   const caster = g.units.find((unit) => unit.id === g.spell?.casterId);
   const target = g.units.find((unit) => unit.id === g.spell?.targetId);
   if (!caster || !target) return g;
   const prompt = g.spell.problem.prompt;
+  const name = g.spell.kind === "bump" ? "Bump" : "Spark";
   if (!verdict.correct) {
     return {
       ...g,
+      phase: "cast",
       spell: { ...g.spell, outcome: "fizzle", given, damage: verdict.damage },
-      lastEvent: `${caster.name} casts Spark. ${prompt}. Fizzle.`,
+      lastEvent: `${caster.name} ${name}. ${prompt}. Fizzle.`,
     };
   }
   const damage = g.spell.problem.answer;
@@ -278,10 +389,11 @@ export function answerCast(g: GameState, given: number): GameState {
   const units = g.units.map((unit) => (unit.id === target.id ? { ...unit, hp } : unit));
   const lastEvent =
     hp === 0
-      ? `${caster.name} casts Spark. ${prompt} = ${damage}. ${target.name} falls.`
-      : `${caster.name} casts Spark. ${prompt} = ${damage}. ${target.name} takes ${damage}.`;
+      ? `${caster.name} ${name}. ${prompt} = ${damage}. ${target.name} falls.`
+      : `${caster.name} ${name}. ${prompt} = ${damage}. ${target.name} takes ${damage}.`;
   return {
     ...g,
+    phase: "cast",
     units,
     spell: { ...g.spell, outcome: "hit", given, damage },
     lastEvent,
@@ -297,7 +409,7 @@ export function finishCast(g: GameState): GameState {
       ? g.progressionRules.xpPerHit + (killed ? g.progressionRules.xpPerKill : 0)
       : 0;
   return withXp(
-    { ...g, phase: "player", spell: null, intent: "move" },
+    { ...g, phase: "player", spell: null, intent: "move", focusId: null, walk: [], committed: false },
     g.units,
     xp,
     g.lastEvent,
@@ -517,6 +629,10 @@ export function beginEnemy(g: GameState): GameState {
     ...g,
     phase: "enemy",
     selectedId: null,
+    focusId: null,
+    spell: null,
+    walk: [],
+    committed: false,
     intent: "move",
     units: g.units.map((unit) => (unit.side === "enemy" ? { ...unit, acted: false } : unit)),
   };
@@ -544,6 +660,10 @@ function withXp(g: GameState, units: Unit[], xp: number, text: string, actedId: 
     units: healed,
     progression: gain.progression,
     selectedId: null,
+    focusId: null,
+    spell: null,
+    walk: [],
+    committed: false,
     intent: "move",
     lastEvent: text,
   };
@@ -701,73 +821,79 @@ export function scriptedStep(g: GameState): GameState {
   const keys = [...moveKeysFor(selected, reach)];
   if (keys.length === 0) return selected;
   const [col, row] = keys[0].split(",").map(Number);
-  return clickTile(selected, col, row);
+  return finishWalk(clickTile(selected, col, row));
+}
+
+export function stepWalk(g: GameState): GameState {
+  if (g.phase !== "player" || g.walk.length === 0) return g;
+  const actor = commandingUnit(g);
+  if (!actor) return { ...g, walk: [] };
+  const step = g.walk[0];
+  const orthogonal = Math.abs(step.col - actor.col) + Math.abs(step.row - actor.row) === 1;
+  const blocked = !orthogonal || !inBounds(step.col, step.row) || TERRAIN[step.row][step.col] === "stone";
+  const occupant = at(g.units, step.col, step.row);
+  if (blocked || (occupant && occupant.id !== actor.id)) return { ...g, walk: [] };
+  const units = withPos(g.units, actor.id, step.col, step.row);
+  const rest = g.walk.slice(1);
+  if (rest.length > 0) {
+    return { ...g, units, walk: rest, spell: null, focusId: null };
+  }
+  return presentChoice({ ...g, units, walk: [] });
+}
+
+export function finishWalk(g: GameState): GameState {
+  let next = g;
+  for (let guard = 0; next.walk.length > 0 && guard < COLS * ROWS; guard++) {
+    const stepped = stepWalk(next);
+    if (stepped === next) break;
+    next = stepped;
+  }
+  return next;
 }
 
 export function clickTile(g: GameState, col: number, row: number): GameState {
-  if (g.phase === "victory" || g.phase === "level" || g.phase === "cast") return g;
+  if (g.phase === "victory" || g.phase === "level") return g;
+  if (g.walk.length > 0) return g;
   const occupant = at(g.units, col, row);
-  if (g.phase === "enemy") return occupant ? { ...g, selectedId: occupant.id } : g;
+  if (g.phase === "cast") {
+    if (g.spell?.outcome === "open" && occupant?.side === "enemy") return showFoe({ ...g, phase: "player" }, occupant.id);
+    return g;
+  }
+  if (g.phase === "enemy") {
+    if (!occupant) return g;
+    if (occupant.side === "enemy") return showFoe(g, occupant.id);
+    return { ...g, selectedId: occupant.id, focusId: null, spell: null };
+  }
   const actor = commandingUnit(g);
-  if (actor && g.intent === "cast") {
-    if (occupant?.id === actor.id) return { ...g, intent: "move", lastEvent: `${actor.name} holds the spell.` };
-    if (occupant && occupant.side === "enemy" && inSpellRange(actor, occupant)) return beginCast(g, occupant.id);
-    return g;
-  }
-  if (actor && g.intent === "strike") {
-    if (occupant?.id === actor.id) {
-      return settle({
-        ...g,
-        units: withActed(g.units, actor.id),
-        selectedId: null,
-        intent: "move",
-        lastEvent: `${actor.name} holds.`,
-      });
-    }
-    if (occupant && occupant.side === "enemy" && Math.abs(occupant.col - actor.col) + Math.abs(occupant.row - actor.row) === 1) {
-      const hit = applyStrike(g.units, actor.id, occupant.id, g);
-      return withXp(g, hit.units, hit.xp, hit.text, actor.id);
-    }
-    return g;
-  }
+  if (occupant?.side === "enemy") return showFoe(g, occupant.id);
   if (occupant && occupant.side === "player" && !occupant.acted) {
-    if (actor?.id === occupant.id) return { ...g, selectedId: null };
-    return { ...g, selectedId: occupant.id, intent: "move" };
+    if (actor?.id === occupant.id) {
+      if (g.committed || bumpTargets(g, actor).length > 0 || sparkTargets(g, actor).length > 0) return presentChoice(g);
+      return { ...g, selectedId: null, focusId: null, spell: null, intent: "move", committed: false };
+    }
+    const bumps = bumpTargets({ ...g, selectedId: occupant.id }, occupant);
+    const sparks = sparkTargets({ ...g, selectedId: occupant.id }, occupant);
+    const next: GameState = {
+      ...g,
+      selectedId: occupant.id,
+      intent: "move",
+      walk: [],
+      committed: false,
+      focusId: null,
+      spell: null,
+    };
+    if (bumps.length === 0 && sparks.length === 0) return next;
+    const kind: ActionKind = bumps.length > 0 ? "bump" : "spark";
+    const foe = (kind === "bump" ? bumps : sparks)[0];
+    return { ...next, focusId: foe.id, spell: openProblem(next, occupant, foe, kind) };
   }
-  if (actor && g.intent === "move") {
+  if (actor && g.intent === "move" && !g.committed && !occupant) {
     const reach = dijkstra(actor, g.units);
     const code = tileKey(col, row);
-    if (!occupant && reach.cost.has(code) && code !== tileKey(actor.col, actor.row)) {
-      const units = withPos(g.units, actor.id, col, row);
-      const moved = units.find((unit) => unit.id === actor.id);
-      if (!moved) return g;
-      const foes = living(units).filter(
-        (unit) => unit.side === "enemy" && Math.abs(unit.col - moved.col) + Math.abs(unit.row - moved.row) === 1,
-      );
-      if (foes.length > 0) {
-        return { ...g, units, selectedId: actor.id, intent: "strike", lastEvent: `${actor.name} can strike.` };
-      }
-      const spellReady =
-        g.casters.includes(actor.id) &&
-        living(units).some((unit) => unit.side === "enemy" && inSpellRange(moved, unit));
-      if (spellReady) {
-        return { ...g, units, selectedId: actor.id, intent: "cast", lastEvent: `${actor.name} can cast.` };
-      }
-      return settle({
-        ...g,
-        units: withActed(units, actor.id),
-        selectedId: null,
-        intent: "move",
-        lastEvent: `${actor.name} moves.`,
-      });
-    }
-    if (occupant && occupant.side === "enemy") {
-      const stand = strikeTiles(actor, occupant, g.units, reach)[0];
-      if (stand) {
-        const units = withPos(g.units, actor.id, stand.col, stand.row);
-        const hit = applyStrike(units, actor.id, occupant.id, g);
-        return withXp(g, hit.units, hit.xp, hit.text, actor.id);
-      }
+    if (reach.cost.has(code) && code !== tileKey(actor.col, actor.row)) {
+      const path = pathTiles(reach, col, row).slice(1);
+      if (path.length === 0) return g;
+      return { ...g, walk: path, spell: null, focusId: null, selectedId: actor.id };
     }
   }
   if (!actor && occupant) return { ...g, selectedId: occupant.id, intent: "move" };
@@ -786,17 +912,17 @@ export function pickUnit(g: GameState, id: string): GameState {
 
 export function promptFor(g: GameState): string | null {
   if (g.phase === "victory") return null;
-  if (g.phase === "cast" && g.spell) {
+  if (g.spell && g.spell.outcome !== "open") {
     if (g.spell.outcome === "fizzle") return "Fizzle.";
-    if (g.spell.outcome === "hit") return `Spark deals ${g.spell.damage}.`;
-    return g.spell.problem.caption;
+    return String(g.spell.damage);
   }
+  if (g.spell?.outcome === "open") return g.spell.problem.prompt;
   if (g.phase === "level") return "Choose one skill or item. The turn waits.";
   if (g.phase === "enemy") return "Ash host is moving.";
+  if (g.walk.length > 0) return "";
   const actor = commandingUnit(g);
-  if (actor && g.intent === "cast") return "Click a foe to cast Spark.";
-  if (actor && g.intent === "strike") return "Click a foe in a red ring to strike, or click this unit again to hold.";
-  if (actor) return "Click a highlighted tile to move, or a foe in a red ring to strike.";
+  if (actor && g.intent === "act") return "";
+  if (actor) return "";
   return "Click an Amber unit.";
 }
 
@@ -831,12 +957,8 @@ export function describeHover(args: {
     const tier = unit.tier ? `, tier ${unit.tier}` : "";
     bits.push(`${unit.name}, ${unit.role}, ${unit.hp}/${unit.maxHp}${tier}`);
   }
-  if (commanding && unit && attackIds.has(unit.id)) {
-    if (intent === "cast") bits.push("Spark. The answer is the damage.");
-    else {
-      const dmg = strikeDamage(commanding, unit, taken, coverDefense);
-      bits.push(unit.hp <= dmg ? `Strike deals ${dmg}, a killing blow` : `Strike deals ${dmg}`);
-    }
+  if (commanding && unit && attackIds.has(unit.id) && intent === "cast") {
+    bits.push(String(unit.hp));
   }
   const inRange =
     commanding !== null && intent === "move" && !unit && reach.cost.has(code) && code !== tileKey(commanding.col, commanding.row);
@@ -859,21 +981,32 @@ export function describeHover(args: {
 
 export function selectionReach(g: GameState): Reach {
   const commanding = commandingUnit(g);
-  if (!commanding || g.intent !== "move") return EMPTY_REACH;
+  if (!commanding || g.intent !== "move" || g.committed || g.walk.length > 0) return EMPTY_REACH;
   return dijkstra(commanding, g.units);
 }
 
-export function attackIdsFor(g: GameState, reach: Reach): Set<string> {
+export function attackIdsFor(g: GameState, _reach: Reach): Set<string> {
   const ids = new Set<string>();
-  const commanding = commandingUnit(g);
+  if (g.focusId) ids.add(g.focusId);
+  const commanding =
+    commandingUnit(g) ??
+    (g.spell
+      ? living(g.units).find((unit) => unit.id === g.spell?.casterId && unit.side === "player" && !unit.acted) ?? null
+      : null);
   if (!commanding) return ids;
-  if (g.intent === "cast") {
-    for (const id of spellTargetIds(g)) ids.add(id);
+  const kind = g.spell?.kind;
+  if (kind === "spark") {
+    for (const foe of sparkTargets(g, commanding)) ids.add(foe.id);
     return ids;
   }
-  const reachForStrike = g.intent === "strike" ? hereReach(commanding) : reach;
-  for (const foe of living(g.units)) {
-    if (foe.side === "enemy" && strikeTiles(commanding, foe, g.units, reachForStrike).length > 0) ids.add(foe.id);
+  if (kind === "bump" || g.intent === "act" || g.phase === "cast") {
+    for (const foe of bumpTargets(g, commanding)) ids.add(foe.id);
+    if (!kind || kind === "bump") {
+      if (g.intent === "act" || g.phase === "cast") {
+        for (const foe of sparkTargets(g, commanding)) ids.add(foe.id);
+      }
+    }
+    return ids;
   }
   return ids;
 }
@@ -881,7 +1014,7 @@ export function attackIdsFor(g: GameState, reach: Reach): Set<string> {
 export function moveKeysFor(g: GameState, reach: Reach): Set<string> {
   const keys = new Set<string>();
   const commanding = commandingUnit(g);
-  if (!commanding || g.intent !== "move") return keys;
+  if (!commanding || g.intent !== "move" || g.committed || g.walk.length > 0) return keys;
   const origin = tileKey(commanding.col, commanding.row);
   for (const code of reach.cost.keys()) {
     if (code !== origin) keys.add(code);

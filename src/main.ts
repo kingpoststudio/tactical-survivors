@@ -20,11 +20,11 @@ import {
   type Campaign,
 } from "./campaign.ts";
 import {
-  armCast,
   attackIdsFor,
   answerCast,
   beginEnemy,
-  blurb,
+  bumpTargets,
+  chooseAction,
   chooseBuild,
   clickTile,
   commandingUnit,
@@ -32,6 +32,7 @@ import {
   describeHover,
   finishCast,
   hoverPath,
+  mathReady,
   moveKeysFor,
   pickUnit,
   promptFor,
@@ -39,9 +40,10 @@ import {
   scriptedStep,
   selectionReach,
   setBattleMath,
-  spellTargetIds,
+  sparkTargets,
   statusOf,
   stepEnemy,
+  stepWalk,
   withCrowd,
   type GameState,
   type Tile,
@@ -52,6 +54,7 @@ import { waveForRound } from "./pressure.ts";
 import { buildNames, offersFor, xpCostForNext, type BuildId } from "./progression.ts";
 
 const ENEMY_STEP_MS = 640;
+const WALK_STEP_MS = 260;
 const KIND_LABEL = { camp: "Start", battle: "Battle", reward: "Reward", town: "Town" } as const;
 
 function required<T extends Element>(element: T | null, name: string): T {
@@ -76,6 +79,10 @@ const styleNote = required(document.querySelector<HTMLElement>("#style-note"), "
 const difficultyPick = required(document.querySelector<HTMLSelectElement>("#difficulty"), "#difficulty");
 const answerPick = required(document.querySelector<HTMLSelectElement>("#answer-mode"), "#answer-mode");
 const castButton = required(document.querySelector<HTMLButtonElement>("#cast"), "#cast");
+const bumpButton = required(document.querySelector<HTMLButtonElement>("#bump"), "#bump");
+const sparkButton = required(document.querySelector<HTMLButtonElement>("#spark"), "#spark");
+const waitButton = required(document.querySelector<HTMLButtonElement>("#wait"), "#wait");
+const actMenu = required(document.querySelector<HTMLElement>("#act-menu"), "#act-menu");
 const endTurn = required(document.querySelector<HTMLButtonElement>("#end"), "#end");
 const back = required(document.querySelector<HTMLButtonElement>("#back"), "#back");
 const pressureButton = required(document.querySelector<HTMLButtonElement>("#pressure"), "#pressure");
@@ -136,7 +143,7 @@ function renderRoster() {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "unit";
-      button.setAttribute("aria-pressed", state.selectedId === unit.id ? "true" : "false");
+      button.setAttribute("aria-pressed", state.selectedId === unit.id || state.focusId === unit.id ? "true" : "false");
       const mark = document.createElement("span");
       mark.className = `mark ${shapeClass(unit.role)} ${spent(unit) || unit.hp <= 0 ? "spent" : side === "player" ? "amber" : "host"}`;
       const who = document.createElement("span");
@@ -160,7 +167,7 @@ function renderRoster() {
   }
   const hint = document.createElement("p");
   hint.id = "hint";
-  hint.textContent = "Select Lumen, move into range, then Cast. The answer is the damage. A wrong answer fizzles. Brush costs 2. Stone blocks.";
+  hint.textContent = "Step a tile. Then Bump or Spark. The answer is the hit.";
   roster.append(hint);
 }
 
@@ -182,9 +189,34 @@ function renderOffers() {
   }
 }
 
+function renderActions() {
+  const actor =
+    commandingUnit(state) ??
+    (state.phase === "cast"
+      ? state.units.find((unit) => unit.id === state.spell?.casterId && unit.hp > 0 && unit.side === "player") ?? null
+      : null);
+  const bumps = actor ? bumpTargets(state, actor) : [];
+  const sparks = actor ? sparkTargets(state, actor) : [];
+  const show =
+    mode !== "map" &&
+    actor !== null &&
+    state.walk.length === 0 &&
+    (state.intent === "act" || state.committed || state.phase === "cast" || bumps.length > 0 || sparks.length > 0);
+  actMenu.hidden = !show;
+  if (!show || !actor) return;
+  const locked = state.spell?.outcome === "hit" || state.spell?.outcome === "fizzle";
+  bumpButton.disabled = locked || bumps.length === 0;
+  sparkButton.hidden = !state.casters.includes(actor.id);
+  sparkButton.disabled = locked || sparks.length === 0;
+  waitButton.hidden = !state.committed && state.intent !== "act";
+  waitButton.disabled = locked;
+  bumpButton.setAttribute("aria-pressed", state.spell?.kind === "bump" && state.spell.outcome === "open" ? "true" : "false");
+  sparkButton.setAttribute("aria-pressed", state.spell?.kind === "spark" && state.spell.outcome === "open" ? "true" : "false");
+}
+
 function renderCast() {
   const spell = state.spell;
-  const open = mode !== "map" && state.phase === "cast" && spell !== null;
+  const open = mode !== "map" && spell !== null;
   castPanel.hidden = !open;
   if (!open || !spell) {
     shownProblem = "";
@@ -193,9 +225,10 @@ function renderCast() {
   problem.textContent = spell.problem.prompt;
   caption.textContent = spell.problem.caption;
   const resolved = spell.outcome !== "open";
-  castNote.textContent = spell.outcome === "hit" ? `Spark deals ${spell.damage}.` : spell.outcome === "fizzle" ? "Fizzle." : "";
-  choices.hidden = state.answerMode !== "choice" || resolved;
-  typedForm.hidden = state.answerMode !== "typed" || resolved;
+  const live = mathReady(state);
+  castNote.textContent = spell.outcome === "hit" ? String(spell.damage) : spell.outcome === "fizzle" ? "Fizzle." : "";
+  choices.hidden = state.answerMode !== "choice" || resolved || !live;
+  typedForm.hidden = state.answerMode !== "typed" || resolved || !live;
   castContinue.hidden = !resolved;
   if (spell.problem.prompt !== shownProblem) {
     shownProblem = spell.problem.prompt;
@@ -324,10 +357,7 @@ function renderHud() {
       })
     : null;
 
-  const actor = commandingUnit(state);
-  const casting = !!actor && state.casters.includes(actor.id) && state.phase === "player";
-  castButton.hidden = !casting;
-  castButton.disabled = spellTargetIds(state).length === 0;
+  castButton.hidden = true;
 
   if (state.phase === "victory") {
     prompt.textContent =
@@ -344,9 +374,9 @@ function renderHud() {
     back.classList.add("primary");
   } else {
     prompt.textContent = promptFor(state) ?? "";
-    const selected = state.units.find((unit) => unit.id === state.selectedId);
-    const stats = selected ? `${selected.name}: ${blurb(selected.role)} Attack ${selected.atk}, defense ${selected.def}, move ${selected.mov}.` : "";
-    detail.textContent = hoverText || state.lastEvent || stats;
+    const foe = state.units.find((unit) => unit.id === state.focusId);
+    detail.textContent =
+      state.spell?.outcome === "open" ? (foe ? String(foe.hp) : "") : hoverText || state.lastEvent || "";
     endTurn.hidden = false;
     endTurn.disabled = state.phase !== "player";
     reset.hidden = mode !== "pressure";
@@ -356,18 +386,21 @@ function renderHud() {
   }
   pressureButton.hidden = true;
   renderOffers();
+  renderActions();
   renderCast();
   if (rosterState !== state) {
     rosterState = state;
     renderRoster();
   }
+  const walking = commandingUnit(state);
+  const walkPath = walking && state.walk.length > 0 ? [{ col: walking.col, row: walking.row }, ...state.walk] : [];
   board.sync({
     units: state.units,
     selectedId: state.selectedId,
     phase: state.phase,
     moveKeys: moveKeysFor(state, reach),
     attackIds: attacks,
-    path: hoverPath(state, hover, reach, attacks),
+    path: walkPath.length > 1 ? walkPath : hoverPath(state, hover, reach, attacks),
     hover,
   });
 }
@@ -382,6 +415,7 @@ function renderMapChrome() {
   detail.textContent = campaign.lastEvent;
   level.hidden = true;
   castPanel.hidden = true;
+  actMenu.hidden = true;
   castButton.hidden = true;
   endTurn.hidden = true;
   back.hidden = true;
@@ -411,7 +445,9 @@ function setState(next: GameState) {
   window.clearTimeout(enemyTimer);
   state = next;
   render();
-  if (mode !== "map" && state.phase === "enemy") {
+  if (mode !== "map" && state.phase === "player" && state.walk.length > 0) {
+    enemyTimer = window.setTimeout(() => setState(stepWalk(state)), WALK_STEP_MS);
+  } else if (mode !== "map" && state.phase === "enemy") {
     enemyTimer = window.setTimeout(() => setState(stepEnemy(state)), ENEMY_STEP_MS);
   }
 }
@@ -479,6 +515,9 @@ function publishProbe() {
     intent: state.intent,
     lastEvent: mode === "map" ? campaign.lastEvent : state.lastEvent,
     problem: state.spell?.problem.prompt ?? "",
+    kind: state.spell?.kind ?? "",
+    focus: state.focusId,
+    walk: state.walk.length,
     cast: state.spell?.outcome ?? "",
     damage: state.spell?.damage ?? null,
     targetHp: target?.hp ?? null,
@@ -494,7 +533,10 @@ function publishProbe() {
 }
 
 endTurn.addEventListener("click", () => setState(beginEnemy(state)));
-castButton.addEventListener("click", () => setState(armCast(state)));
+castButton.addEventListener("click", () => setState(chooseAction(state, "spark")));
+bumpButton.addEventListener("click", () => setState(chooseAction(state, "bump")));
+sparkButton.addEventListener("click", () => setState(chooseAction(state, "spark")));
+waitButton.addEventListener("click", () => setState(chooseAction(state, "wait")));
 castContinue.addEventListener("click", () => setState(finishCast(state)));
 typedForm.addEventListener("submit", (event) => {
   event.preventDefault();

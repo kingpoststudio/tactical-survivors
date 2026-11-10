@@ -80,6 +80,14 @@ function problem(kind: ProblemKind, prompt: string, answer: number, cap: number,
   return { kind, prompt, caption: "How many?", answer, choices: choices(answer, cap, rng) };
 }
 
+/** A regular hit. The answer is the hit, so a correct tap deals that many. */
+export function makeStrikeProblem(damage: number, rng: () => number = Math.random): MathProblem {
+  const answer = Math.max(1, Math.floor(damage));
+  if (answer <= 5) return problem("count", dots(answer), answer, 5, rng);
+  const left = 1 + int(rng, answer - 1);
+  return problem("sum", `${left} + ${answer - left}`, answer, answer, rng);
+}
+
 export function makeProblem(difficulty: Difficulty, rng: () => number = Math.random): MathProblem {
   if (difficulty === "within-5") {
     if (rng() < 0.5) {

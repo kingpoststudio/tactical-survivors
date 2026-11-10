@@ -188,10 +188,13 @@ button:disabled {
 #map[hidden],
 #view[hidden],
 #cast-panel[hidden],
+#act-menu[hidden],
 #roster[hidden],
 #typed-form[hidden],
 #choices[hidden],
-#cast-continue[hidden] {
+#cast-continue[hidden],
+#spark[hidden],
+#wait[hidden] {
   display: none !important;
 }
 
@@ -248,25 +251,72 @@ button:disabled {
   position: relative;
 }
 
-#cast-panel {
+#dock {
   position: absolute;
-  inset: 0;
   z-index: 2;
+  top: 12px;
+  left: 12px;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  padding: 16px;
-  background: rgba(207, 200, 186, 0.94);
+  gap: 8px;
+  width: min(240px, 46vw);
+  pointer-events: none;
+}
+
+#dock > * {
+  pointer-events: auto;
+}
+
+#act-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  background: #2a2118;
+  border: 2px solid #c4a574;
+  border-radius: 8px;
+}
+
+#act-menu button {
+  min-height: 42px;
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 16px;
+  color: #f4ecd8;
+  background: #3a3126;
+  border: 1px solid #8c7350;
+  border-radius: 4px;
+}
+
+#act-menu button[aria-pressed="true"] {
+  background: #f4ecd8;
+  color: #2a2118;
+  border-color: #f4ecd8;
+}
+
+#act-menu button:disabled {
+  opacity: 0.35;
+}
+
+#cast-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 12px;
+  background: #f4ecd8;
+  border: 2px solid #2a2118;
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(42, 33, 24, 0.18);
 }
 
 #problem {
   margin: 0;
-  font-size: 56px;
-  line-height: 1.1;
-  font-weight: 650;
+  font-size: 44px;
+  line-height: 1.05;
+  font-weight: 700;
   text-align: center;
+  letter-spacing: 0.04em;
 }
 
 #caption,
