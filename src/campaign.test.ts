@@ -6,12 +6,19 @@ import {
   PACE_ESTIMATE,
   RECRUIT_COST,
   buyBun,
+  chooseMapBuild,
   createCampaign,
   equip,
   linked,
   offerWager,
+  offersFromSeed,
+  OFFER_COST,
+  REROLL_COST,
+  rerollShop,
   rollDrop,
   settleWager,
+  stageMapChoice,
+  takeOffer,
   WAGER_STAKE,
   recruit,
   returnFromBattle,
@@ -245,5 +252,49 @@ assert.equal(miss.wager?.outcome, "lost");
 const hit = settleWager(table, 1);
 assert.equal(hit.gold, 7);
 assert.equal(hit.wager?.outcome, "won");
+
+const sameA = offersFromSeed(1, [], []);
+const sameB = offersFromSeed(1, [], []);
+assert.deepEqual(sameA, sameB);
+assert.equal(sameA.length, 2);
+assert.notDeepEqual(sameA, offersFromSeed(2, [], []));
+const poorRoll = rerollShop({ ...createCampaign(), gold: 0 });
+assert.equal(poorRoll.gold, 0);
+assert.equal(poorRoll.offers.length, 0);
+const rolled = rerollShop({ ...createCampaign(), gold: 5 });
+assert.equal(rolled.gold, 4);
+assert.equal(rolled.seed, 1);
+assert.deepEqual(rolled.offers, offersFromSeed(1, [], []));
+assert.equal(REROLL_COST, 1);
+
+let bench = takeOffer(
+  {
+    ...createCampaign(),
+    gold: 4,
+    offers: [{ kind: "kit", kit: "ember", favor: "Sorceress" }],
+  },
+  0,
+);
+assert.equal(bench.gold, 2);
+assert.equal(OFFER_COST, 2);
+assert.deepEqual(bench.stash, ["ember"]);
+assert.equal(bench.favors.ember, "Sorceress");
+assert.equal(takeOffer({ ...createCampaign(), gold: 1, offers: [{ kind: "kit", kit: "ember", favor: "Scout" }] }, 0).gold, 1);
+bench = equip(bench, "ilya", "ember");
+assert.equal(bench.party.find((ally) => ally.id === "ilya")?.role, "Warden");
+assert.equal(bench.party.find((ally) => ally.id === "ilya")?.ability, "ember");
+bench = stageMapChoice({
+  ...bench,
+  progression: { xp: 4, level: 0, taken: [], pending: [] },
+});
+assert.equal(bench.progression.xp, 0);
+assert.equal(bench.progression.pending.length, 3);
+bench = chooseMapBuild(bench, "focused-strike");
+assert.ok(bench.progression.taken.includes("focused-strike"));
+assert.equal(bench.party.find((ally) => ally.id === "ilya")?.atk, 6);
+const nextFight = startBattle(bench);
+assert.equal(nextFight.units.find((unit) => unit.id === "ilya")?.ability, "ember");
+assert.equal(nextFight.units.find((unit) => unit.id === "ilya")?.atk, 6);
+assert.ok(nextFight.progression.taken.includes("focused-strike"));
 
 console.log("map rewards ok");

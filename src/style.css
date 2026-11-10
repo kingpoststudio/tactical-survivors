@@ -236,7 +236,8 @@ button:disabled {
 .card small { color: #5e584f; font-size: 12px; }
 
 #shop,
-#gear {
+#gear,
+#bench {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;

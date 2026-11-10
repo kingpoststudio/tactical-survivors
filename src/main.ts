@@ -13,7 +13,13 @@ import {
   KITS,
   linked,
   offerWager,
+  OFFER_COST,
+  REROLL_COST,
   settleWager,
+  stageMapChoice,
+  chooseMapBuild,
+  takeOffer,
+  rerollShop,
   WAGER_STAKE,
   nodeById,
   recruit,
@@ -395,14 +401,60 @@ function renderMap() {
     const name = document.createElement("strong");
     name.textContent = ally.name;
     const line = document.createElement("small");
-    const spark = ally.spell ? " · Spark" : "";
-    const worn = ally.ability ? ` · ${KITS[ally.ability].name}` : "";
-    const band = ally.equip ? ` · ${KITS[ally.equip].name}` : "";
-    line.textContent = `${ally.hp}/${ally.maxHp}${spark}${worn}${band}`;
+    const spark = ally.spell ? "Spark" : "—";
+    const ability = ally.ability ? KITS[ally.ability].name : "—";
+    const gear = ally.equip ? KITS[ally.equip].name : "—";
+    line.textContent = `${ally.hp}/${ally.maxHp} · ${spark} · ${ability} · ${gear}`;
     card.append(name, line);
     party.append(card);
   }
   map.append(party);
+  const bench = document.createElement("div");
+  bench.id = "bench";
+  const reroll = document.createElement("button");
+  reroll.type = "button";
+  reroll.dataset.reroll = "shop";
+  reroll.textContent = `Reroll · ${REROLL_COST}`;
+  reroll.disabled = campaign.gold < REROLL_COST;
+  reroll.addEventListener("click", () => {
+    campaign = rerollShop(campaign);
+    render();
+  });
+  bench.append(reroll);
+  const level = document.createElement("button");
+  level.type = "button";
+  level.dataset.level = "map";
+  level.textContent = "Level";
+  level.addEventListener("click", () => {
+    campaign = stageMapChoice(campaign);
+    render();
+  });
+  bench.append(level);
+  for (const [index, offer] of campaign.offers.entries()) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.offer = String(index);
+    const label = offer.kind === "kit" ? KITS[offer.kit].name : offer.build;
+    button.textContent = `${label} · ${offer.favor} · ${OFFER_COST}`;
+    button.disabled = campaign.gold < OFFER_COST;
+    button.addEventListener("click", () => {
+      campaign = takeOffer(campaign, index);
+      render();
+    });
+    bench.append(button);
+  }
+  for (const offer of campaign.progression.pending) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.build = offer.id;
+    button.textContent = offer.name;
+    button.addEventListener("click", () => {
+      campaign = chooseMapBuild(campaign, offer.id);
+      render();
+    });
+    bench.append(button);
+  }
+  map.append(bench);
 }
 
 function syncMathControls() {
@@ -560,6 +612,7 @@ function enter(nodeId: string) {
     showBattle(result.battle);
     return;
   }
+  campaign = stageMapChoice(campaign);
   mode = "map";
   render();
 }
@@ -572,6 +625,7 @@ function beginMapBattle() {
 function backToMap() {
   window.clearTimeout(enemyTimer);
   if (mode === "battle") campaign = returnFromBattle(campaign, state);
+  campaign = stageMapChoice(campaign);
   mode = "map";
   hover = null;
   render();

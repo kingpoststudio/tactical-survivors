@@ -1,4 +1,4 @@
-import { BUILD_POOL, freshProgression, type BuildId, type ProgressionState } from "./progression.ts";
+import { BUILD_POOL, acceptBuild, freshProgression, offersFor, xpCostForNext, type BuildId, type ProgressionState } from "./progression.ts";
 import { createBattle, openingRoster, type GameState, type Unit } from "./game.ts";
 import { gradeAnswer, makeProblem, type AnswerMode, type Difficulty, type MathProblem } from "./mathcast.ts";
 
@@ -21,6 +21,8 @@ export const CLASS_OUTCOMES = ["Warden", "Sorceress", "Scout"] as const;
 export type ClassOutcome = (typeof CLASS_OUTCOMES)[number];
 export const WEAPON_OUTCOMES: readonly KitId[] = ["ember", "band", "spear"];
 export const WAGER_STAKE = 2;
+export const REROLL_COST = 1;
+export const OFFER_COST = 2;
 
 export interface WorldNode {
   id: string;
@@ -72,6 +74,10 @@ export interface Wager {
   outcome: "open" | "won" | "lost";
 }
 
+export type ShopOffer =
+  | { kind: "kit"; kit: KitId; favor: ClassOutcome }
+  | { kind: "build"; build: BuildId; favor: ClassOutcome };
+
 export interface Campaign {
   nodeId: string;
   gold: number;
@@ -89,6 +95,8 @@ export interface Campaign {
   favors: Partial<Record<KitId, ClassOutcome>>;
   /** A stake of game gold. Never real money. */
   wager: Wager | null;
+  seed: number;
+  offers: ShopOffer[];
 }
 
 export type TravelResult =
@@ -161,6 +169,8 @@ export function createCampaign(): Campaign {
     stash: [],
     favors: {},
     wager: null,
+    seed: 0,
+    offers: [],
   };
 }
 
@@ -424,4 +434,102 @@ export function recruit(campaign: Campaign): Campaign {
     party: [...campaign.party, pip()],
     lastEvent: `Pip joins. ${campaign.gold} − ${RECRUIT_COST} = ${gold}.`,
   };
+}
+
+function mixSeed(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let next = Math.imul(state ^ (state >>> 15), 1 | state);
+    next = (next + Math.imul(next ^ (next >>> 7), 61 | next)) ^ next;
+    return ((next ^ (next >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Two shop offers from a seed. Same seed, same offers. */
+export function offersFromSeed(seed: number, owned: readonly KitId[], taken: readonly BuildId[]): ShopOffer[] {
+  const rng = mixSeed(seed);
+  const pool: ShopOffer[] = [
+    ...WEAPON_OUTCOMES.filter((kit) => !owned.includes(kit)).map((kit) => ({ kind: "kit" as const, kit, favor: "Warden" as const })),
+    ...BUILD_POOL.filter((offer) => !taken.includes(offer.id)).map((offer) => ({
+      kind: "build" as const,
+      build: offer.id,
+      favor: "Warden" as const,
+    })),
+  ];
+  const bag = [...pool];
+  const picked: ShopOffer[] = [];
+  for (let count = 0; count < 2 && bag.length > 0; count++) {
+    const index = Math.floor(rng() * bag.length);
+    const favor = CLASS_OUTCOMES[Math.floor(rng() * CLASS_OUTCOMES.length)];
+    const item = bag.splice(index, 1)[0];
+    picked.push({ ...item, favor });
+  }
+  return picked;
+}
+
+/** Spend 1 gold to draw a new pair of offers. No clock. */
+export function rerollShop(campaign: Campaign): Campaign {
+  if (campaign.gold < REROLL_COST) return campaign;
+  const seed = (campaign.seed + 1) >>> 0;
+  const gold = campaign.gold - REROLL_COST;
+  return {
+    ...campaign,
+    gold,
+    seed,
+    offers: offersFromSeed(seed, ownedKits(campaign), campaign.progression.taken),
+    lastEvent: `${campaign.gold} − ${REROLL_COST} = ${gold}.`,
+  };
+}
+
+/** Spend 2 gold to take one offer into the stash or the build. */
+export function takeOffer(campaign: Campaign, index: number): Campaign {
+  const offer = campaign.offers[index];
+  if (!offer || campaign.gold < OFFER_COST) return campaign;
+  const owned = ownedKits(campaign);
+  if (offer.kind === "kit" && owned.includes(offer.kit)) return campaign;
+  if (offer.kind === "build" && campaign.progression.taken.includes(offer.build)) return campaign;
+  const gold = campaign.gold - OFFER_COST;
+  const offers = campaign.offers.filter((_, item) => item !== index);
+  if (offer.kind === "kit") {
+    return {
+      ...campaign,
+      gold,
+      offers,
+      stash: [...campaign.stash, offer.kit],
+      favors: { ...campaign.favors, [offer.kit]: offer.favor },
+      lastEvent: `${campaign.gold} − ${OFFER_COST} = ${gold}.`,
+    };
+  }
+  return {
+    ...campaign,
+    gold,
+    offers,
+    party: applyAllyBuild(campaign.party, offer.build),
+    progression: { ...campaign.progression, taken: [...campaign.progression.taken, offer.build] },
+    lastEvent: `${campaign.gold} − ${OFFER_COST} = ${gold}.`,
+  };
+}
+
+/** If the banked XP can open a choice, put it on the map. It does not start a fight. */
+export function stageMapChoice(campaign: Campaign): Campaign {
+  if (campaign.progression.pending.length > 0) return campaign;
+  const cost = xpCostForNext(campaign.progression.level);
+  if (campaign.progression.xp < cost) return campaign;
+  const pending = offersFor(campaign.progression.level, campaign.progression.taken);
+  if (pending.length === 0) return campaign;
+  return {
+    ...campaign,
+    progression: { ...campaign.progression, xp: campaign.progression.xp - cost, pending },
+  };
+}
+
+export function chooseMapBuild(campaign: Campaign, id: BuildId): Campaign {
+  const before = campaign.progression.taken;
+  const accepted = acceptBuild(campaign.progression, id);
+  if (!accepted) return campaign;
+  const added = accepted.progression.taken.filter((item) => !before.includes(item));
+  let party = campaign.party;
+  for (const build of added) party = applyAllyBuild(party, build);
+  return { ...campaign, progression: accepted.progression, party };
 }
