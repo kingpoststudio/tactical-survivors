@@ -9,6 +9,8 @@ import {
   WORLD,
   buyBun,
   createCampaign,
+  equip,
+  KITS,
   linked,
   nodeById,
   recruit,
@@ -25,6 +27,7 @@ import {
   beginEnemy,
   bumpTargets,
   chooseAction,
+  emberTargets,
   chooseBuild,
   clickTile,
   commandingUnit,
@@ -37,6 +40,7 @@ import {
   pickUnit,
   promptFor,
   ROSTER_ORDER,
+  presentationDelay,
   scriptedStep,
   selectionReach,
   setBattleMath,
@@ -53,9 +57,7 @@ import { isAnswerMode, isDifficulty } from "./mathcast.ts";
 import { waveForRound } from "./pressure.ts";
 import { buildNames, offersFor, xpCostForNext, type BuildId } from "./progression.ts";
 
-const ENEMY_STEP_MS = 640;
-const WALK_STEP_MS = 260;
-const KIND_LABEL = { camp: "Start", battle: "Battle", reward: "Reward", town: "Town" } as const;
+const KIND_LABEL = { camp: "Start", battle: "Battle", reward: "Reward", town: "Town", setup: "Setup" } as const;
 
 function required<T extends Element>(element: T | null, name: string): T {
   if (!element) throw new Error(`Ashfield is missing ${name}.`);
@@ -81,7 +83,9 @@ const answerPick = required(document.querySelector<HTMLSelectElement>("#answer-m
 const castButton = required(document.querySelector<HTMLButtonElement>("#cast"), "#cast");
 const bumpButton = required(document.querySelector<HTMLButtonElement>("#bump"), "#bump");
 const sparkButton = required(document.querySelector<HTMLButtonElement>("#spark"), "#spark");
+const emberButton = required(document.querySelector<HTMLButtonElement>("#ember"), "#ember");
 const waitButton = required(document.querySelector<HTMLButtonElement>("#wait"), "#wait");
+const fastButton = required(document.querySelector<HTMLButtonElement>("#fast"), "#fast");
 const actMenu = required(document.querySelector<HTMLElement>("#act-menu"), "#act-menu");
 const endTurn = required(document.querySelector<HTMLButtonElement>("#end"), "#end");
 const back = required(document.querySelector<HTMLButtonElement>("#back"), "#back");
@@ -106,6 +110,7 @@ let hover: Tile | null = null;
 let enemyTimer = 0;
 let rosterState: GameState | null = null;
 let shownProblem = "";
+let fast = false;
 
 function shapeClass(role: string): string {
   if (role === "Warden" || role === "Brute") return "square";
@@ -197,21 +202,30 @@ function renderActions() {
       : null);
   const bumps = actor ? bumpTargets(state, actor) : [];
   const sparks = actor ? sparkTargets(state, actor) : [];
+  const embers = actor ? emberTargets(state, actor) : [];
   const show =
     mode !== "map" &&
     actor !== null &&
     state.walk.length === 0 &&
-    (state.intent === "act" || state.committed || state.phase === "cast" || bumps.length > 0 || sparks.length > 0);
+    (state.intent === "act" ||
+      state.committed ||
+      state.phase === "cast" ||
+      bumps.length > 0 ||
+      sparks.length > 0 ||
+      embers.length > 0);
   actMenu.hidden = !show;
   if (!show || !actor) return;
   const locked = state.spell?.outcome === "hit" || state.spell?.outcome === "fizzle";
   bumpButton.disabled = locked || bumps.length === 0;
   sparkButton.hidden = !state.casters.includes(actor.id);
   sparkButton.disabled = locked || sparks.length === 0;
+  emberButton.hidden = actor.ability !== "ember";
+  emberButton.disabled = locked || embers.length === 0;
   waitButton.hidden = !state.committed && state.intent !== "act";
   waitButton.disabled = locked;
   bumpButton.setAttribute("aria-pressed", state.spell?.kind === "bump" && state.spell.outcome === "open" ? "true" : "false");
   sparkButton.setAttribute("aria-pressed", state.spell?.kind === "spark" && state.spell.outcome === "open" ? "true" : "false");
+  emberButton.setAttribute("aria-pressed", state.spell?.kind === "ember" && state.spell.outcome === "open" ? "true" : "false");
 }
 
 function renderCast() {
@@ -298,6 +312,25 @@ function renderMap() {
     shop.append(bun, ally);
     map.append(shop);
   }
+  if (campaign.stash.length > 0) {
+    const gear = document.createElement("div");
+    gear.id = "gear";
+    for (const kit of campaign.stash) {
+      for (const ally of campaign.party) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.dataset.equip = kit;
+        button.dataset.ally = ally.id;
+        button.textContent = `${KITS[kit].name} · ${ally.name}`;
+        button.addEventListener("click", () => {
+          campaign = equip(campaign, ally.id, kit);
+          render();
+        });
+        gear.append(button);
+      }
+    }
+    map.append(gear);
+  }
   const party = document.createElement("div");
   party.id = "map-party";
   for (const ally of campaign.party) {
@@ -307,7 +340,9 @@ function renderMap() {
     name.textContent = ally.name;
     const line = document.createElement("small");
     const spark = ally.spell ? " · Spark" : "";
-    line.textContent = `${ally.hp}/${ally.maxHp}${spark}`;
+    const worn = ally.ability ? ` · ${KITS[ally.ability].name}` : "";
+    const band = ally.equip ? ` · ${KITS[ally.equip].name}` : "";
+    line.textContent = `${ally.hp}/${ally.maxHp}${spark}${worn}${band}`;
     card.append(name, line);
     party.append(card);
   }
@@ -445,10 +480,11 @@ function setState(next: GameState) {
   window.clearTimeout(enemyTimer);
   state = next;
   render();
+  if (state.spell?.outcome === "open" || state.phase === "cast") return;
   if (mode !== "map" && state.phase === "player" && state.walk.length > 0) {
-    enemyTimer = window.setTimeout(() => setState(stepWalk(state)), WALK_STEP_MS);
+    enemyTimer = window.setTimeout(() => setState(stepWalk(state)), presentationDelay("walk", fast));
   } else if (mode !== "map" && state.phase === "enemy") {
-    enemyTimer = window.setTimeout(() => setState(stepEnemy(state)), ENEMY_STEP_MS);
+    enemyTimer = window.setTimeout(() => setState(stepEnemy(state)), presentationDelay("enemy", fast));
   }
 }
 
@@ -536,7 +572,19 @@ endTurn.addEventListener("click", () => setState(beginEnemy(state)));
 castButton.addEventListener("click", () => setState(chooseAction(state, "spark")));
 bumpButton.addEventListener("click", () => setState(chooseAction(state, "bump")));
 sparkButton.addEventListener("click", () => setState(chooseAction(state, "spark")));
+emberButton.addEventListener("click", () => setState(chooseAction(state, "ember")));
 waitButton.addEventListener("click", () => setState(chooseAction(state, "wait")));
+fastButton.addEventListener("click", () => {
+  fast = !fast;
+  fastButton.setAttribute("aria-pressed", fast ? "true" : "false");
+  if (state.spell?.outcome === "open" || state.phase === "cast") return;
+  window.clearTimeout(enemyTimer);
+  if (mode !== "map" && state.phase === "player" && state.walk.length > 0) {
+    enemyTimer = window.setTimeout(() => setState(stepWalk(state)), presentationDelay("walk", fast));
+  } else if (mode !== "map" && state.phase === "enemy") {
+    enemyTimer = window.setTimeout(() => setState(stepEnemy(state)), presentationDelay("enemy", fast));
+  }
+});
 castContinue.addEventListener("click", () => setState(finishCast(state)));
 typedForm.addEventListener("submit", (event) => {
   event.preventDefault();

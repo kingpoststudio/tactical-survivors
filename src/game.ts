@@ -44,7 +44,7 @@ const BRUSH: ReadonlyArray<readonly [number, number]> = [
 export type Side = "player" | "enemy";
 export type Phase = "player" | "enemy" | "level" | "victory" | "cast";
 export type Intent = "move" | "act" | "strike" | "cast";
-export type ActionKind = "bump" | "spark";
+export type ActionKind = "bump" | "spark" | "ember";
 export type Terrain = "plain" | "brush" | "stone";
 
 export interface SpellCast {
@@ -76,6 +76,8 @@ export interface Unit {
   mov: number;
   acted: boolean;
   tier?: number;
+  /** Equipped fire ability. Favors a sorceress, and any class can wear it. */
+  ability?: "ember" | null;
 }
 
 export interface GameState {
@@ -248,9 +250,18 @@ export function bumpTargets(g: GameState, actor: Unit): Unit[] {
   return living(g.units).filter((unit) => unit.side === "enemy" && beside(actor, unit));
 }
 
+function foesInReach(actor: Unit, units: Unit[]): Unit[] {
+  return living(units).filter((unit) => unit.side === "enemy" && inSpellRange(actor, unit));
+}
+
 export function sparkTargets(g: GameState, actor: Unit): Unit[] {
   if (!g.casters.includes(actor.id)) return [];
-  return living(g.units).filter((unit) => unit.side === "enemy" && inSpellRange(actor, unit));
+  return foesInReach(actor, g.units);
+}
+
+export function emberTargets(g: GameState, actor: Unit): Unit[] {
+  if (actor.ability !== "ember") return [];
+  return foesInReach(actor, g.units);
 }
 
 function readyStriker(g: GameState): Unit | null {
@@ -275,6 +286,7 @@ export function mathReady(g: GameState): boolean {
   if (!actor || !foe || actor.hp <= 0 || actor.acted || actor.side !== "player") return false;
   if (g.selectedId !== actor.id) return false;
   if (spell.kind === "bump") return beside(actor, foe);
+  if (spell.kind === "ember") return actor.ability === "ember" && inSpellRange(actor, foe);
   return g.casters.includes(actor.id) && inSpellRange(actor, foe);
 }
 
@@ -285,8 +297,9 @@ export function showFoe(g: GameState, id: string): GameState {
   const striker = actor ?? readyStriker(g);
   if (!striker) return { ...g, focusId: id, selectedId: id };
   const sparkOk = !!actor && sparkTargets(g, actor).some((unit) => unit.id === id);
+  const emberOk = !!actor && emberTargets(g, actor).some((unit) => unit.id === id);
   const bumpOk = !!actor && bumpTargets(g, actor).some((unit) => unit.id === id);
-  const kind: ActionKind = sparkOk && !bumpOk ? "spark" : "bump";
+  const kind: ActionKind = sparkOk && !bumpOk ? "spark" : emberOk && !bumpOk ? "ember" : "bump";
   return {
     ...g,
     selectedId: actor ? actor.id : id,
@@ -300,7 +313,8 @@ function presentChoice(g: GameState): GameState {
   if (!actor) return g;
   const bumps = bumpTargets(g, actor);
   const sparks = sparkTargets(g, actor);
-  if (bumps.length === 0 && sparks.length === 0) {
+  const embers = emberTargets(g, actor);
+  if (bumps.length === 0 && sparks.length === 0 && embers.length === 0) {
     return settle({
       ...g,
       units: withActed(g.units, actor.id),
@@ -312,8 +326,8 @@ function presentChoice(g: GameState): GameState {
       committed: false,
     });
   }
-  const kind: ActionKind = bumps.length > 0 ? "bump" : "spark";
-  const foe = (kind === "bump" ? bumps : sparks)[0];
+  const kind: ActionKind = bumps.length > 0 ? "bump" : sparks.length > 0 ? "spark" : "ember";
+  const foe = (kind === "bump" ? bumps : kind === "spark" ? sparks : embers)[0];
   return {
     ...g,
     intent: "act",
@@ -345,7 +359,8 @@ export function chooseAction(g: GameState, kind: ActionKind | "wait"): GameState
       committed: false,
     });
   }
-  const targets = kind === "bump" ? bumpTargets(base, actor) : sparkTargets(base, actor);
+  const targets =
+    kind === "bump" ? bumpTargets(base, actor) : kind === "ember" ? emberTargets(base, actor) : sparkTargets(base, actor);
   if (targets.length === 0) return g;
   const foe = targets.find((unit) => unit.id === base.focusId) ?? targets[0];
   return {
@@ -375,7 +390,7 @@ export function answerCast(g: GameState, given: number): GameState {
   const target = g.units.find((unit) => unit.id === g.spell?.targetId);
   if (!caster || !target) return g;
   const prompt = g.spell.problem.prompt;
-  const name = g.spell.kind === "bump" ? "Bump" : "Spark";
+  const name = g.spell.kind === "bump" ? "Bump" : g.spell.kind === "ember" ? "Ember" : "Spark";
   if (!verdict.correct) {
     return {
       ...g,
@@ -841,6 +856,20 @@ export function stepWalk(g: GameState): GameState {
   return presentChoice({ ...g, units, walk: [] });
 }
 
+/** How long a step stays on screen. Fast-forward only changes this delay. */
+export function presentationDelay(kind: "walk" | "enemy", fast: boolean): number {
+  if (kind === "walk") return fast ? 40 : 260;
+  return fast ? 80 : 640;
+}
+
+/** Advance a walk or an enemy step. An open math prompt stays open. */
+export function presentStep(g: GameState): GameState {
+  if (g.phase === "cast" || g.spell?.outcome === "open") return g;
+  if (g.phase === "player" && g.walk.length > 0) return stepWalk(g);
+  if (g.phase === "enemy") return stepEnemy(g);
+  return g;
+}
+
 export function finishWalk(g: GameState): GameState {
   let next = g;
   for (let guard = 0; next.walk.length > 0 && guard < COLS * ROWS; guard++) {
@@ -868,11 +897,20 @@ export function clickTile(g: GameState, col: number, row: number): GameState {
   if (occupant?.side === "enemy") return showFoe(g, occupant.id);
   if (occupant && occupant.side === "player" && !occupant.acted) {
     if (actor?.id === occupant.id) {
-      if (g.committed || bumpTargets(g, actor).length > 0 || sparkTargets(g, actor).length > 0) return presentChoice(g);
+      if (
+        g.committed ||
+        bumpTargets(g, actor).length > 0 ||
+        sparkTargets(g, actor).length > 0 ||
+        emberTargets(g, actor).length > 0
+      ) {
+        return presentChoice(g);
+      }
       return { ...g, selectedId: null, focusId: null, spell: null, intent: "move", committed: false };
     }
-    const bumps = bumpTargets({ ...g, selectedId: occupant.id }, occupant);
-    const sparks = sparkTargets({ ...g, selectedId: occupant.id }, occupant);
+    const picked = { ...g, selectedId: occupant.id };
+    const bumps = bumpTargets(picked, occupant);
+    const sparks = sparkTargets(picked, occupant);
+    const embers = emberTargets(picked, occupant);
     const next: GameState = {
       ...g,
       selectedId: occupant.id,
@@ -882,9 +920,9 @@ export function clickTile(g: GameState, col: number, row: number): GameState {
       focusId: null,
       spell: null,
     };
-    if (bumps.length === 0 && sparks.length === 0) return next;
-    const kind: ActionKind = bumps.length > 0 ? "bump" : "spark";
-    const foe = (kind === "bump" ? bumps : sparks)[0];
+    if (bumps.length === 0 && sparks.length === 0 && embers.length === 0) return next;
+    const kind: ActionKind = bumps.length > 0 ? "bump" : sparks.length > 0 ? "spark" : "ember";
+    const foe = (kind === "bump" ? bumps : kind === "spark" ? sparks : embers)[0];
     return { ...next, focusId: foe.id, spell: openProblem(next, occupant, foe, kind) };
   }
   if (actor && g.intent === "move" && !g.committed && !occupant) {
@@ -999,11 +1037,16 @@ export function attackIdsFor(g: GameState, _reach: Reach): Set<string> {
     for (const foe of sparkTargets(g, commanding)) ids.add(foe.id);
     return ids;
   }
+  if (kind === "ember") {
+    for (const foe of emberTargets(g, commanding)) ids.add(foe.id);
+    return ids;
+  }
   if (kind === "bump" || g.intent === "act" || g.phase === "cast") {
     for (const foe of bumpTargets(g, commanding)) ids.add(foe.id);
     if (!kind || kind === "bump") {
       if (g.intent === "act" || g.phase === "cast") {
         for (const foe of sparkTargets(g, commanding)) ids.add(foe.id);
+        for (const foe of emberTargets(g, commanding)) ids.add(foe.id);
       }
     }
     return ids;

@@ -194,6 +194,7 @@ button:disabled {
 #choices[hidden],
 #cast-continue[hidden],
 #spark[hidden],
+#ember[hidden],
 #wait[hidden] {
   display: none !important;
 }
@@ -234,7 +235,8 @@ button:disabled {
 .card strong { display: block; font-size: 14px; }
 .card small { color: #5e584f; font-size: 12px; }
 
-#shop {
+#shop,
+#gear {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;

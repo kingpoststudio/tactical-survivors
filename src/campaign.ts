@@ -8,7 +8,15 @@ export const BUN_HP = 1;
 export const RECRUIT_COST = 3;
 export const REWARD_GOLD = 2;
 
-export type NodeKind = "camp" | "battle" | "reward" | "town";
+/**
+ * Pacing estimates only. They are not rules, and there is no clock.
+ * A fight is about 5 minutes of active play. A run is about 8 fights.
+ * Shops and setup take as long as the player wants. Wall time is not capped.
+ */
+export const PACE_ESTIMATE = { activeFightMinutes: 5, fightsPerRun: 8 } as const;
+
+export type NodeKind = "camp" | "battle" | "reward" | "town" | "setup";
+export type KitId = "ember" | "band";
 
 export interface WorldNode {
   id: string;
@@ -18,11 +26,18 @@ export interface WorldNode {
 }
 
 export const WORLD: readonly WorldNode[] = [
-  { id: "camp", name: "Camp", kind: "camp", links: ["meadow"] },
-  { id: "meadow", name: "Meadow", kind: "battle", links: ["camp", "shrine"] },
+  { id: "camp", name: "Camp", kind: "camp", links: ["meadow", "glen"] },
+  { id: "meadow", name: "Meadow", kind: "battle", links: ["camp", "shrine", "glen"] },
+  { id: "glen", name: "Glen", kind: "setup", links: ["camp", "meadow", "town"] },
   { id: "shrine", name: "Shrine", kind: "reward", links: ["meadow", "town"] },
-  { id: "town", name: "Town", kind: "town", links: ["shrine"] },
+  { id: "town", name: "Town", kind: "town", links: ["shrine", "glen"] },
 ];
+
+/** Ember favors a sorceress. Band favors a warden. Either can be worn by any ally. */
+export const KITS: Record<KitId, { name: string; favors: string; slot: "ability" | "equip" }> = {
+  ember: { name: "Ember", favors: "Sorceress", slot: "ability" },
+  band: { name: "Band", favors: "Warden", slot: "equip" },
+};
 
 export interface Ally {
   id: string;
@@ -36,6 +51,8 @@ export interface Ally {
   col: number;
   row: number;
   spell: boolean;
+  ability: "ember" | null;
+  equip: "band" | null;
 }
 
 export interface Campaign {
@@ -50,6 +67,7 @@ export interface Campaign {
   difficulty: Difficulty;
   answerMode: AnswerMode;
   lastEvent: string;
+  stash: KitId[];
 }
 
 export type TravelResult =
@@ -80,6 +98,8 @@ function allyFrom(unit: Unit, spell: boolean): Ally {
     col: unit.col,
     row: unit.row,
     spell,
+    ability: null,
+    equip: null,
   };
 }
 
@@ -96,6 +116,8 @@ function pip(): Ally {
     col: 4,
     row: 6,
     spell: false,
+    ability: null,
+    equip: null,
   };
 }
 
@@ -115,6 +137,7 @@ export function createCampaign(): Campaign {
     difficulty: "within-5",
     answerMode: "choice",
     lastEvent: "Camp.",
+    stash: [],
   };
 }
 
@@ -139,9 +162,10 @@ function toUnit(ally: Ally): Unit {
     hp: ally.hp,
     maxHp: ally.maxHp,
     atk: ally.atk,
-    def: ally.def,
+    def: ally.def + (ally.equip === "band" ? 1 : 0),
     mov: ally.mov,
     acted: false,
+    ability: ally.ability,
   };
 }
 
@@ -188,32 +212,75 @@ export function travel(campaign: Campaign, nodeId: string): TravelResult {
   }
   if (node.kind === "town") next = { ...next, lastEvent: "Town." };
   if (node.kind === "camp") next = { ...next, lastEvent: "Camp." };
+  if (node.kind === "setup") next = { ...next, lastEvent: "Glen." };
   return { kind: "map", campaign: next };
+}
+
+export function dropsFor(defeated: number, owned: readonly KitId[]): KitId[] {
+  const gained: KitId[] = [];
+  let left = Math.max(0, defeated);
+  for (const id of ["ember", "band"] as const) {
+    if (left <= 0) break;
+    if (owned.includes(id)) continue;
+    gained.push(id);
+    left -= 1;
+  }
+  return gained;
+}
+
+function ownedKits(campaign: Campaign): KitId[] {
+  const kits = [...campaign.stash];
+  for (const ally of campaign.party) {
+    if (ally.ability) kits.push(ally.ability);
+    if (ally.equip) kits.push(ally.equip);
+  }
+  return kits;
+}
+
+export function equip(campaign: Campaign, allyId: string, kit: KitId): Campaign {
+  if (!campaign.stash.includes(kit)) return campaign;
+  const ally = campaign.party.find((item) => item.id === allyId);
+  if (!ally || ally.hp <= 0) return campaign;
+  const slot = KITS[kit].slot;
+  const previous = slot === "ability" ? ally.ability : ally.equip;
+  const stash = campaign.stash.filter((id) => id !== kit);
+  if (previous) stash.push(previous);
+  const party = campaign.party.map((item) => {
+    if (item.id !== allyId) return item;
+    return slot === "ability" ? { ...item, ability: "ember" as const } : { ...item, equip: "band" as const };
+  });
+  return { ...campaign, stash, party };
 }
 
 function restored(party: readonly Ally[], units: readonly Unit[]): Ally[] {
   return party.map((ally) => {
     const unit = units.find((item) => item.id === ally.id);
     if (!unit) return { ...ally, hp: ally.maxHp };
-    return { ...ally, maxHp: unit.maxHp, hp: unit.maxHp, atk: unit.atk, def: unit.def, mov: unit.mov };
+    const band = ally.equip === "band" ? 1 : 0;
+    return { ...ally, maxHp: unit.maxHp, hp: unit.maxHp, atk: unit.atk, def: unit.def - band, mov: unit.mov };
   });
 }
 
 export function returnFromBattle(campaign: Campaign, battle: GameState): Campaign {
   if (battle.phase !== "victory") return campaign;
-  if (battle.winner !== "player") return { ...campaign, lastEvent: "The meadow holds. No gold." };
-  const gold = campaign.gold + BATTLE_GOLD;
-  const cleared = campaign.cleared.includes(campaign.nodeId) ? campaign.cleared : [...campaign.cleared, campaign.nodeId];
-  return {
+  const defeated = battle.units.filter((unit) => unit.side === "enemy" && unit.hp <= 0).length;
+  const carried = {
     ...campaign,
-    gold,
-    party: restored(campaign.party, battle.units),
+    stash: [...campaign.stash, ...dropsFor(defeated, ownedKits(campaign))],
     progression: {
       xp: battle.progression.xp,
       level: battle.progression.level,
       taken: [...battle.progression.taken],
       pending: [],
     },
+  };
+  if (battle.winner !== "player") return { ...carried, lastEvent: "The meadow holds. No gold." };
+  const gold = campaign.gold + BATTLE_GOLD;
+  const cleared = campaign.cleared.includes(campaign.nodeId) ? campaign.cleared : [...campaign.cleared, campaign.nodeId];
+  return {
+    ...carried,
+    gold,
+    party: restored(campaign.party, battle.units),
     cleared,
     lastEvent: `Clear. ${campaign.gold} + ${BATTLE_GOLD} = ${gold}.`,
   };

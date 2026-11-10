@@ -3,9 +3,12 @@ import {
   BATTLE_GOLD,
   BUN_COST,
   BUN_HP,
+  PACE_ESTIMATE,
   RECRUIT_COST,
   buyBun,
   createCampaign,
+  equip,
+  linked,
   recruit,
   returnFromBattle,
   setAnswerMode,
@@ -13,7 +16,7 @@ import {
   startBattle,
   travel,
 } from "./campaign.ts";
-import { createBattle } from "./game.ts";
+import { answerCast, chooseAction, clickTile, createBattle, presentStep, presentationDelay } from "./game.ts";
 
 const camp = createCampaign();
 assert.equal(camp.nodeId, "camp");
@@ -122,5 +125,81 @@ assert.ok(rematch.battle.units.some((unit) => unit.id === "pip" && unit.side ===
 assert.ok(rematch.battle.progression.taken.includes("brush-cover"));
 assert.equal(rematch.battle.units.find((unit) => unit.id === "mora")?.maxHp, 10);
 assert.equal(startBattle(hired).casters.includes("mora"), true);
+
+assert.equal(linked("camp", "meadow"), true);
+assert.equal(linked("camp", "glen"), true);
+assert.equal(linked("camp", "town"), false);
+const glenChoice = travel(camp, "glen");
+assert.equal(glenChoice.kind, "map");
+if (glenChoice.kind !== "map") throw new Error("glen should stay on the map");
+assert.equal(glenChoice.campaign.nodeId, "glen");
+assert.equal(travel(camp, "meadow").kind, "battle");
+assert.equal(PACE_ESTIMATE.activeFightMinutes, 5);
+assert.equal(PACE_ESTIMATE.fightsPerRun, 8);
+
+let carried = createCampaign();
+let fought = startBattle(carried);
+fought = {
+  ...fought,
+  phase: "victory",
+  winner: "player",
+  progression: { xp: 1, level: 1, taken: ["long-stride"], pending: [] },
+  units: fought.units.map((unit) => (unit.side === "enemy" ? { ...unit, hp: 0 } : unit)),
+};
+carried = returnFromBattle(carried, fought);
+assert.equal(carried.progression.level, 1);
+assert.deepEqual(carried.progression.taken, ["long-stride"]);
+assert.deepEqual(carried.stash, ["ember", "band"]);
+carried = equip(carried, "ilya", "ember");
+carried = equip(carried, "ilya", "band");
+assert.equal(carried.party.find((ally) => ally.id === "ilya")?.role, "Warden");
+assert.equal(carried.party.find((ally) => ally.id === "ilya")?.ability, "ember");
+assert.equal(carried.party.find((ally) => ally.id === "ilya")?.equip, "band");
+assert.equal(carried.stash.length, 0);
+carried = buyBun({ ...carried, nodeId: "town", gold: 5 });
+assert.equal(carried.bunBought, true);
+assert.equal(carried.gold, 3);
+assert.equal(carried.party.find((ally) => ally.id === "ilya")?.maxHp, 13);
+const setup = travel(carried, "glen");
+assert.equal(setup.kind, "map");
+if (setup.kind !== "map") throw new Error("town should reach glen");
+const again = travel(setup.campaign, "meadow");
+assert.equal(again.kind, "battle");
+if (again.kind !== "battle") throw new Error("glen should reach the meadow");
+assert.equal(again.campaign.bunBought, true);
+assert.equal(again.campaign.gold, 3);
+assert.equal(again.battle.progression.level, 1);
+assert.deepEqual(again.battle.progression.taken, ["long-stride"]);
+assert.equal(again.battle.units.find((unit) => unit.id === "ilya")?.ability, "ember");
+assert.equal(again.battle.units.find((unit) => unit.id === "ilya")?.def, 3);
+assert.equal(again.battle.units.find((unit) => unit.id === "mora")?.maxHp, 10);
+
+let oak = again.battle;
+oak = {
+  ...oak,
+  units: oak.units.map((unit) => (unit.id === "ash" ? { ...unit, col: 1, row: 5 } : unit)),
+};
+oak = clickTile(oak, 1, 6);
+oak = chooseAction(oak, "ember");
+assert.equal(oak.spell?.kind, "ember");
+assert.equal(oak.spell?.casterId, "ilya");
+assert.equal(oak.spell?.outcome, "open");
+const prompt = oak.spell?.problem.prompt ?? "";
+assert.ok(prompt.length > 0);
+const held = presentStep(oak);
+assert.equal(held.spell?.outcome, "open");
+assert.equal(held.spell?.problem.prompt, prompt);
+assert.equal(presentationDelay("walk", true) < presentationDelay("walk", false), true);
+assert.equal(presentStep(held).spell?.outcome, "open");
+const cast = answerCast(oak, oak.spell?.problem.answer ?? -1);
+assert.equal(cast.spell?.outcome, "hit");
+assert.equal(cast.spell?.damage, oak.spell?.problem.answer);
+assert.notEqual(cast.spell?.damage, 99);
+
+const kept = returnFromBattle(again.campaign, { ...again.battle, phase: "victory", winner: "enemy" });
+assert.equal(kept.gold, again.campaign.gold);
+assert.equal(kept.bunBought, true);
+assert.equal(kept.progression.level, 1);
+assert.equal(kept.party.find((ally) => ally.id === "ilya")?.ability, "ember");
 
 console.log("map rewards ok");

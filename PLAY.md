@@ -1,16 +1,17 @@
 # Play Ashfield
 
-The path starts on a small map. Step from Camp to the Meadow, fight, then come back. The Shrine is the next step, then Town.
+The path starts on a small map. From Camp, choose the Meadow or the Glen. A fight is about 5 minutes of active play, and a run is about 8 fights. Those are estimates. There is no clock. Shops and setup take as long as you want.
 
 Lumen casts Spark. The answer to the problem is the damage. A wrong answer fizzles. It does not hit for the number you typed or tapped.
 
 ## Map
 
-Camp, Meadow, Shrine, and Town sit on a line. You can step only to a neighbor.
+Camp, Meadow, Glen, Shrine, and Town are places you can step between when they touch. From Camp the choice is Meadow or Glen.
 
-- Meadow starts a short fight. Clearing it pays 5 gold.
+- Meadow starts a short fight. Clearing it pays 5 gold. A defeated monster leaves Ember, then Band.
+- Glen is a quiet stop. Equip what you are carrying. Ember favors a sorceress and Band favors a warden, and any ally can wear either.
 - Shrine grants Brush cover: standing in brush adds 2 defense. Brush still costs 2 move.
-- Town sells one Sweet bun for 2 gold (each ally +1 max health) and one recruit, Pip, for 3 gold.
+- Town sells one Sweet bun for 2 gold (each ally +1 max health) and one recruit, Pip, for 3 gold. The shop does not time you.
 
 A clear meadow pays enough for both.
 
@@ -32,6 +33,7 @@ The problem stays on screen until you continue. A hit deals that answer. A miss 
 - Brush costs 2 movement. Stone blocks movement.
 - Hover a tile to see the move cost, the strike damage, and whether a foe can hit you there.
 - `End turn` lets the host move.
+- `>>` only shortens the step you watch. The math prompt stays, and a right answer is still the right answer.
 
 The meadow fight is the opening three foes. Win or lose, Map brings you back. Only a win pays gold.
 
