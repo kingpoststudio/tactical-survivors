@@ -9,7 +9,7 @@ bun install
 bun run dev
 ```
 
-Open the URL Vite prints. Amber moves first. Controls, the wave clock, and level-up choices are in `PLAY.md`.
+Open the URL Vite prints. The map is the start: Camp, then the Meadow fight, then Shrine and Town. Spark's damage is the answer to a short math problem. Controls are in `PLAY.md`.
 
 ```bash
 bun run test

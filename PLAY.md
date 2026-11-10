@@ -1,53 +1,46 @@
 # Play Ashfield
 
-Amber moves first. The run is one battle that gets heavier each round. Clear the field after the last wave to hold Ashfield. If Amber falls, the host holds it.
+The path starts on a small map. Step from Camp to the Meadow, fight, then come back. The Shrine is the next step, then Town.
 
-`New battle` starts again from round 1.
+Lumen casts Spark. The answer to the problem is the damage. A wrong answer fizzles. It does not hit for the number you typed or tapped.
 
-## Controls
+## Map
+
+Camp, Meadow, Shrine, and Town sit on a line. You can step only to a neighbor.
+
+- Meadow starts a short fight. Clearing it pays 5 gold.
+- Shrine grants Brush cover: standing in brush adds 2 defense. Brush still costs 2 move.
+- Town sells one Sweet bun for 2 gold (each ally +1 max health) and one recruit, Pip, for 3 gold.
+
+A clear meadow pays enough for both.
+
+## Spark
+
+Select Lumen, move into range, then Cast. Click the foe if more than one is close enough.
+
+- Choices: tap a number.
+- Type: enter the exact number.
+- Difficulty starts at counting and sums within 5. Sums and differences within 10 and 20, then a harder tier, are in the Difficulty menu.
+
+The problem stays on screen until you continue. A hit deals that answer. A miss deals nothing.
+
+## Battle
 
 - Click an Amber fighter, then a highlighted tile to move.
-- Click a foe in a red ring to strike. A strike is melee: you must stand on a tile next to the foe.
+- Click a foe in a red ring to strike. A strike is melee: stand on a tile next to the foe.
 - If the move ends next to a foe, click that foe to strike, or click your fighter again to hold.
-- Brush costs 2 movement. Stone blocks movement. Both stay in effect after a level-up.
+- Brush costs 2 movement. Stone blocks movement.
 - Hover a tile to see the move cost, the strike damage, and whether a foe can hit you there.
-- `End turn` lets the host move. New foes do not act on the turn they arrive.
+- `End turn` lets the host move.
+
+The meadow fight is the opening three foes. Win or lose, Map brings you back. Only a win pays gold.
 
 ## Pressure
 
-Reinforcements walk in at the start of your turn. Later waves are larger, then tougher. Round 5 is a crowd. Round 6 is the last wave, and those foes hit harder.
-
-| Round | Who arrives |
-| --- | --- |
-| 1 | Opening three |
-| 2 | 2 foes |
-| 3 | 3 foes |
-| 4 | 4 harder foes |
-| 5 | A crowd of 8 |
-| 6 | 4 tougher foes |
-
-The board keeps a few empty tiles so the crowd cannot seal every step. A full field simply leaves the extras off.
-
-These numbers live in `PRESSURE_DEFAULTS` in `src/pressure.ts`. A battle created with `pressure.enabled` set to false is the opening skirmish only.
-
-## Progression
-
-Amber shares one XP pool. A hit grants 1 XP. A kill grants 4 more. The first choice costs 4 XP, and each later choice costs 2 more.
-
-Each choice is one of three offers, and a taken offer does not come back. Skills and items both change the fight:
-
-- **Long stride** (skill): Amber move +1.
-- **Brush cover** (skill): Amber standing in brush gains +2 defense. Brush still costs 2 move, so the tile is a choice, not a free bonus.
-- **Focused strike** (skill): Amber attack +2.
-- **Ward plate** (item): Amber defense +1 on every tile.
-- **Field kit** (item): Amber max health +3, and each living fighter heals 3.
-
-The turn waits until you pick. Defaults live in `PROGRESSION_DEFAULTS` in `src/progression.ts`.
+`Pressure run` is the older rising-pressure battle. It is not the path the map starts on. Reinforcements still walk in from round 2, and round 6 is the last wave. `New battle` starts that run over. Those numbers live in `PRESSURE_DEFAULTS` in `src/pressure.ts`.
 
 ## Models
 
-The fighters already on the board keep their meshes. Reinforcements reuse those same meshes by role. A missing file stays a colored stand-in.
+The fighters already on the board keep their meshes. Reinforcements reuse those same meshes by role. Pip, and any missing file, stays a colored stand-in.
 
-`public/assets/manifest.json` is the seam for art that is not here yet. Top-level `slots` stays empty, so the board meshes stay until you pick a style. A style set maps a unit id, or `role:Brute` and the other roles, to a file under `/models/`. The value can be that file name, or `{ "file", "yaw", "rotation" }`. Missing files keep the stand-in.
-
-The Style menu previews one set at a time. Current board is the default. Picking a set does not lock the game to that look. Woodland has no selected meshes. Fighters a set does not cover keep the board mesh. Scale and feet are fit on the tile when the mesh loads. A mesh with no explicit rotation stands its long axis up when it is clearly lying flat.
+`public/assets/manifest.json` is the seam for art that is not here yet. The Style menu previews one set at a time. Picking a set does not lock the game to that look.

@@ -1,10 +1,13 @@
 import {
-  attackIdsFor,
+  answerCast,
   beginEnemy,
+  chooseAction,
   chooseBuild,
   clickTile,
   counterattack,
   createBattle,
+  finishCast,
+  finishWalk,
   living,
   moveKeysFor,
   selectionReach,
@@ -47,19 +50,30 @@ function act(g: GameState): GameState {
     const selected = g.selectedId === actor.id ? g : clickTile(g, actor.col, actor.row);
     if (selected.phase !== "player") return selected;
     const reach = selectionReach(selected);
-    for (const id of attackIdsFor(selected, reach)) {
-      const foe = selected.units.find((unit) => unit.id === id);
-      if (!foe || foe.hp <= 0) continue;
+    for (const foe of living(selected.units)) {
+      if (foe.side !== "enemy") continue;
       const stand = strikeTiles(actor, foe, selected.units, reach)[0];
-      const col = stand?.col ?? actor.col;
-      const row = stand?.row ?? actor.row;
+      if (!stand) continue;
+      const col = stand.col;
+      const row = stand.row;
       const dmg = strikeDamage(actor, foe, selected.progression.taken, selected.progressionRules.coverDefense);
       const kill = foe.hp <= dmg;
       const after = kill ? selected.units.map((unit) => (unit.id === foe.id ? { ...unit, hp: 0 } : unit)) : selected.units;
       const threat = counterattack(col, row, actor, after, selected.progression.taken, selected.progressionRules.coverDefense)?.dmg ?? 0;
       if (threat >= actor.hp) continue;
       const score = (kill ? 800 : 420) + dmg * 10 - threat * 20;
-      if (!best || score > best.score) best = { score, apply: () => clickTile(selected, foe.col, foe.row) };
+      if (!best || score > best.score) {
+        best = {
+          score,
+          apply: () => {
+            let next = selected;
+            if (stand.col !== actor.col || stand.row !== actor.row) next = finishWalk(clickTile(next, stand.col, stand.row));
+            next = chooseAction({ ...next, focusId: foe.id }, "bump");
+            if (!next.spell || next.spell.outcome !== "open") return next;
+            return finishCast(answerCast(next, next.spell.problem.answer));
+          },
+        };
+      }
     }
     const here = foeDistance(actor.col, actor.row, selected.units);
     const hereThreat = counterattack(actor.col, actor.row, actor, selected.units, selected.progression.taken, selected.progressionRules.coverDefense)?.dmg ?? 0;
@@ -76,7 +90,15 @@ function act(g: GameState): GameState {
       const closer = hereThreat === 0 && dist < here && neighbors === 0;
       if (!safer && !closer) continue;
       const score = safer ? 100 + dist : 40 - dist;
-      if (!best || score > best.score) best = { score, apply: () => clickTile(selected, col, row) };
+      if (!best || score > best.score) {
+        best = {
+          score,
+          apply: () => {
+            const next = finishWalk(clickTile(selected, col, row));
+            return next.intent === "act" ? chooseAction(next, "wait") : next;
+          },
+        };
+      }
     }
   }
   if (best) return best.apply();
@@ -95,6 +117,12 @@ export function playFight(start: GameState = createBattle()): PlayResult {
 
 export function playIdle(start: GameState = createBattle()): PlayResult {
   return play(start, true);
+}
+
+export function stepBattle(g: GameState): GameState {
+  if (g.phase === "enemy") return stepEnemy(g);
+  if (g.phase === "victory" || g.phase === "cast") return g;
+  return act(g);
 }
 
 function play(start: GameState, idle: boolean): PlayResult {

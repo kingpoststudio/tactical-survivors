@@ -17,6 +17,24 @@ html, body, #app {
   min-height: 100%;
 }
 
+#difficulty-label,
+#answer-label {
+  font-size: 12px;
+  color: #5e584f;
+}
+
+#difficulty,
+#answer-mode {
+  font: inherit;
+  font-size: 13px;
+  margin-left: 4px;
+  border: 1px solid #c4bdae;
+  background: #efeae1;
+  color: #2a2622;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
 header {
   display: flex;
   align-items: center;
@@ -153,9 +171,184 @@ button:disabled {
   font-weight: 450;
 }
 
-#view {
+#stage {
   min-height: 0;
   position: relative;
+}
+
+#map {
+  height: 100%;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 8px 16px 16px;
+}
+
+#map[hidden],
+#view[hidden],
+#cast-panel[hidden],
+#act-menu[hidden],
+#roster[hidden],
+#typed-form[hidden],
+#choices[hidden],
+#cast-continue[hidden],
+#spark[hidden],
+#wait[hidden] {
+  display: none !important;
+}
+
+.map-nodes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.node {
+  min-height: 52px;
+  min-width: 140px;
+  font-size: 16px;
+}
+
+.node.here:disabled {
+  opacity: 1;
+  background: #2a2622;
+  border-color: #2a2622;
+  color: #f4f0e8;
+}
+
+#map-party {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.card {
+  border: 1px solid #c4bdae;
+  border-radius: 8px;
+  background: #efeae1;
+  padding: 8px 10px;
+  min-width: 120px;
+}
+
+.card strong { display: block; font-size: 14px; }
+.card small { color: #5e584f; font-size: 12px; }
+
+#shop {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+#shop button {
+  min-height: 48px;
+  font-size: 16px;
+}
+
+#view {
+  height: 100%;
+  min-height: 0;
+  position: relative;
+}
+
+#dock {
+  position: absolute;
+  z-index: 2;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(240px, 46vw);
+  pointer-events: none;
+}
+
+#dock > * {
+  pointer-events: auto;
+}
+
+#act-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  background: #2a2118;
+  border: 2px solid #c4a574;
+  border-radius: 8px;
+}
+
+#act-menu button {
+  min-height: 42px;
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 16px;
+  color: #f4ecd8;
+  background: #3a3126;
+  border: 1px solid #8c7350;
+  border-radius: 4px;
+}
+
+#act-menu button[aria-pressed="true"] {
+  background: #f4ecd8;
+  color: #2a2118;
+  border-color: #f4ecd8;
+}
+
+#act-menu button:disabled {
+  opacity: 0.35;
+}
+
+#cast-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 12px;
+  background: #f4ecd8;
+  border: 2px solid #2a2118;
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(42, 33, 24, 0.18);
+}
+
+#problem {
+  margin: 0;
+  font-size: 44px;
+  line-height: 1.05;
+  font-weight: 700;
+  text-align: center;
+  letter-spacing: 0.04em;
+}
+
+#caption,
+#cast-note {
+  margin: 0;
+  font-size: 18px;
+}
+
+#choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: center;
+}
+
+.choice {
+  min-width: 88px;
+  min-height: 72px;
+  font-size: 32px;
+}
+
+#typed-answer {
+  font: inherit;
+  font-size: 32px;
+  width: 4.5ch;
+  text-align: center;
+  padding: 8px;
+  margin-left: 8px;
+  border: 1px solid #c4bdae;
+  border-radius: 6px;
+  background: #f4f0e8;
+  color: #2a2622;
 }
 
 #view canvas {

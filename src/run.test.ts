@@ -3,7 +3,9 @@ import { parseAssetManifest } from "./assets.ts";
 import {
   beginEnemy,
   chooseBuild,
+  answerCast,
   clickTile,
+  finishCast,
   createBattle,
   living,
   scriptedStep,
@@ -115,7 +117,8 @@ const quiet = createBattle({ progression: { ...PROGRESSION_DEFAULTS, enabled: fa
 let muted = quiet;
 muted.units = muted.units.map((unit) => (unit.id === "vetch" ? { ...unit, col: 6, row: 5, hp: 1 } : unit));
 muted = clickTile(muted, 6, 6);
-muted = clickTile(muted, 6, 5);
+assert.equal(muted.spell?.problem.answer, 4);
+muted = finishCast(answerCast(muted, 4));
 assert.equal(muted.units.find((unit) => unit.id === "vetch")?.hp, 0);
 assert.equal(muted.phase === "level", false);
 assert.equal(muted.progression.pending.length, 0);
@@ -123,7 +126,8 @@ assert.equal(muted.progression.pending.length, 0);
 let xp = createBattle();
 xp.units = xp.units.map((unit) => (unit.id === "vetch" ? { ...unit, col: 6, row: 5, hp: 1 } : unit));
 xp = clickTile(xp, 6, 6);
-xp = clickTile(xp, 6, 5);
+assert.equal(xp.spell?.kind, "bump");
+xp = finishCast(answerCast(xp, xp.spell?.problem.answer ?? 0));
 assert.equal(xp.phase, "level");
 assert.equal(xp.progression.pending.length, 3);
 assert.deepEqual(

@@ -10,14 +10,27 @@
       <header>
         <div class="title">
           <h1>Ashfield</h1>
-          <p id="round">Round 1</p>
+          <p id="round">Camp</p>
           <p id="meta"></p>
         </div>
         <div id="sides"></div>
         <div id="actions">
+          <label id="difficulty-label">Difficulty <select id="difficulty">
+            <option value="within-5">Counting</option>
+            <option value="within-10">Sums to 10</option>
+            <option value="within-20">Sums to 20</option>
+            <option value="harder">Harder</option>
+          </select></label>
+          <label id="answer-label">Answer <select id="answer-mode">
+            <option value="choice">Choices</option>
+            <option value="typed">Type</option>
+          </select></label>
           <label id="style-label">Style <select id="style"></select></label>
-          <button id="end" type="button">End turn</button>
-          <button id="reset" type="button">New battle</button>
+          <button id="cast" type="button" hidden>Cast</button>
+          <button id="end" type="button" hidden>End turn</button>
+          <button id="back" type="button" hidden>Map</button>
+          <button id="pressure" type="button">Pressure run</button>
+          <button id="reset" type="button" hidden>New battle</button>
         </div>
       </header>
       <div id="copy">
@@ -28,8 +41,30 @@
           <div id="offers"></div>
         </div>
       </div>
-      <div id="view"></div>
-      <div id="roster"></div>
+      <div id="stage">
+        <div id="map"></div>
+        <div id="view" hidden>
+          <div id="dock">
+            <div id="cast-panel" hidden>
+              <p id="problem"></p>
+              <p id="caption"></p>
+              <p id="cast-note"></p>
+              <div id="choices"></div>
+              <form id="typed-form">
+                <label>Answer <input id="typed-answer" inputmode="numeric" autocomplete="off" /></label>
+                <button type="submit">OK</button>
+              </form>
+              <button id="cast-continue" type="button" hidden>OK</button>
+            </div>
+            <div id="act-menu" hidden>
+              <button id="bump" type="button">Bump</button>
+              <button id="spark" type="button">Spark</button>
+              <button id="wait" type="button">Wait</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="roster" hidden></div>
       <pre id="probe" hidden></pre>
     </div>
     <script type="module" src="/src/main.ts"></script>
