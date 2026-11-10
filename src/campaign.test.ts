@@ -11,16 +11,21 @@ import {
   encounterMode,
   equip,
   linked,
+  loadRun,
   offerWager,
   offersFromSeed,
   OFFER_COST,
   REROLL_COST,
   rerollShop,
+  rewardOffers,
   rollDrop,
+  RUN_SAVE_KEY,
+  saveRun,
   settleTwist,
   settleWager,
   stageMapChoice,
   takeOffer,
+  takeReward,
   WAGER_STAKE,
   recruit,
   returnFromBattle,
@@ -371,5 +376,78 @@ const back = returnFromBattle(flare, { ...flareFight, phase: "victory", winner: 
 assert.equal(back.bunBought, true);
 assert.equal(back.party.find((ally) => ally.id === "ilya")?.ability, "flare");
 assert.equal(startBattle(back).units.find((unit) => unit.id === "ilya")?.ability, "flare");
+
+const sameRewards = rewardOffers(3, "meadow", []);
+assert.deepEqual(sameRewards, rewardOffers(3, "meadow", []));
+assert.ok(sameRewards.length === 2 || sameRewards.length === 3);
+const otherRewards = rewardOffers(9, "glen", []);
+assert.ok(otherRewards.length === 2 || otherRewards.length === 3);
+const rewardKinds = new Set([...sameRewards, ...otherRewards].map((offer) => offer.kind));
+assert.ok(rewardKinds.has("weapon") || rewardKinds.has("ability") || rewardKinds.has("class"));
+assert.ok(rewardKinds.size >= 2);
+
+const picked = takeReward(
+  {
+    ...createCampaign(),
+    rewards: [
+      { kind: "ability", kit: "ember", favor: "Sorceress" },
+      { kind: "class", role: "Scout", favor: "Scout" },
+      { kind: "weapon", kit: "spear", favor: "Warden" },
+    ],
+  },
+  0,
+  "ilya",
+);
+assert.equal(picked.rewards.length, 0);
+assert.deepEqual(picked.stash, ["ember"]);
+assert.equal(picked.favors.ember, "Sorceress");
+const worn = equip(picked, "ilya", "ember");
+assert.equal(worn.party.find((ally) => ally.id === "ilya")?.role, "Warden");
+assert.equal(worn.party.find((ally) => ally.id === "ilya")?.ability, "ember");
+assert.equal(startBattle(worn).units.find((unit) => unit.id === "ilya")?.ability, "ember");
+const classed = takeReward(
+  { ...worn, rewards: [{ kind: "class", role: "Scout", favor: "Scout" }] },
+  0,
+  "ilya",
+);
+assert.equal(classed.party.find((ally) => ally.id === "ilya")?.role, "Warden");
+assert.equal(classed.party.find((ally) => ally.id === "ilya")?.secondary, "Scout");
+assert.equal(classed.party.find((ally) => ally.id === "ilya")?.ability, "ember");
+
+let run = stageMapChoice({
+  ...createCampaign(),
+  nodeId: "town",
+  gold: 5,
+  cleared: ["meadow"],
+  progression: { xp: 4, level: 0, taken: [], pending: [] },
+});
+run = chooseMapBuild(run, "focused-strike");
+run = buyBun(run);
+run = equip({ ...run, stash: ["ember"], favors: { ember: "Sorceress" } }, "ilya", "ember");
+const raw = saveRun(run, true);
+const loaded = loadRun(raw);
+assert.ok(loaded);
+assert.equal(loaded?.fast, true);
+assert.equal(loaded?.campaign.nodeId, "town");
+assert.ok(loaded?.campaign.cleared.includes("meadow"));
+assert.equal(loaded?.campaign.gold, run.gold);
+assert.equal(loaded?.campaign.progression.level, run.progression.level);
+assert.equal(loaded?.campaign.progression.xp, run.progression.xp);
+assert.ok(loaded?.campaign.progression.taken.includes("focused-strike"));
+assert.equal(loaded?.campaign.bunBought, true);
+assert.equal(loaded?.campaign.party.find((ally) => ally.id === "ilya")?.ability, "ember");
+assert.equal(buyBun(loaded?.campaign ?? run).gold, loaded?.campaign.gold);
+const fresh = createCampaign();
+assert.equal(fresh.gold, 0);
+assert.equal(fresh.nodeId, "camp");
+assert.equal(fresh.cleared.length, 0);
+assert.equal(fresh.bunBought, false);
+assert.equal(fresh.progression.level, 0);
+assert.equal(fresh.party.find((ally) => ally.id === "ilya")?.ability, null);
+assert.equal(loadRun("nope"), null);
+const parsed = JSON.parse(raw) as { clock?: unknown; deadline?: unknown };
+assert.equal("clock" in parsed, false);
+assert.equal("deadline" in parsed, false);
+assert.equal(RUN_SAVE_KEY, "tactical-survivors-run");
 
 console.log("map rewards ok");

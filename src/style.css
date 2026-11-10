@@ -238,7 +238,8 @@ button:disabled {
 
 #shop,
 #gear,
-#bench {
+#bench,
+#rewards {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;

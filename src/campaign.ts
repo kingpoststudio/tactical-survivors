@@ -63,6 +63,8 @@ export interface Ally {
   spell: boolean;
   ability: "ember" | "flare" | null;
   equip: "band" | "spear" | null;
+  /** A second class. It does not block gear or spells. */
+  secondary: ClassOutcome | null;
 }
 
 export interface DropRoll {
@@ -88,6 +90,17 @@ export type ShopOffer =
   | { kind: "kit"; kit: KitId; favor: ClassOutcome }
   | { kind: "build"; build: BuildId; favor: ClassOutcome };
 
+export type RewardOffer =
+  | { kind: "weapon"; kit: "band" | "spear"; favor: ClassOutcome }
+  | { kind: "ability"; kit: "ember" | "flare"; favor: ClassOutcome }
+  | { kind: "class"; role: ClassOutcome; favor: ClassOutcome };
+
+export interface SavedRun {
+  version: 1;
+  campaign: Campaign;
+  fast: boolean;
+}
+
 export interface Campaign {
   nodeId: string;
   gold: number;
@@ -109,6 +122,8 @@ export interface Campaign {
   offers: ShopOffer[];
   modes: Partial<Record<string, EncounterMode>>;
   twist: Twist | null;
+  /** Pick one after a win. Empty means no choice is waiting. */
+  rewards: RewardOffer[];
 }
 
 export type TravelResult =
@@ -141,6 +156,7 @@ function allyFrom(unit: Unit, spell: boolean): Ally {
     spell,
     ability: null,
     equip: null,
+    secondary: null,
   };
 }
 
@@ -159,6 +175,7 @@ function pip(): Ally {
     spell: false,
     ability: null,
     equip: null,
+    secondary: null,
   };
 }
 
@@ -185,6 +202,7 @@ export function createCampaign(): Campaign {
     offers: [],
     modes: {},
     twist: null,
+    rewards: [],
   };
 }
 
@@ -393,6 +411,7 @@ export function returnFromBattle(campaign: Campaign, battle: GameState, rng: () 
     ...carried,
     gold,
     cleared,
+    rewards: rewardOffers((campaign.seed ^ foldName(campaign.nodeId)) >>> 0, campaign.nodeId, ownedKits(carried)),
     lastEvent: `Clear. ${campaign.gold} + ${payout} = ${gold}.`,
   };
 }
@@ -597,4 +616,121 @@ export function settleTwist(campaign: Campaign, given: number): Campaign {
     twist: { ...twist, outcome: "hit" },
     lastEvent: `${campaign.gold} + ${twist.problem.answer} = ${gold}.`,
   };
+}
+
+const REWARD_WEAPONS = ["band", "spear"] as const;
+const REWARD_ABILITIES = ["ember", "flare"] as const;
+
+/** Two or three post-battle offers. Same seed and place, same offers. */
+export function rewardOffers(seed: number, nodeId: string, owned: readonly KitId[]): RewardOffer[] {
+  const rng = mixSeed((foldName(nodeId) ^ Math.imul((seed + 1) >>> 0, 0x85ebca6b)) >>> 0);
+  const count = rng() < 0.5 ? 2 : 3;
+  const weapons = REWARD_WEAPONS.filter((kit) => !owned.includes(kit));
+  const abilities = REWARD_ABILITIES.filter((kit) => !owned.includes(kit));
+  const classes = [...CLASS_OUTCOMES];
+  const buckets: Array<{ take: () => RewardOffer | null }> = [
+    {
+      take: () => {
+        if (weapons.length === 0) return null;
+        const kit = weapons.splice(Math.floor(rng() * weapons.length), 1)[0];
+        const favor = CLASS_OUTCOMES[Math.floor(rng() * CLASS_OUTCOMES.length)];
+        return { kind: "weapon", kit, favor };
+      },
+    },
+    {
+      take: () => {
+        if (abilities.length === 0) return null;
+        const kit = abilities.splice(Math.floor(rng() * abilities.length), 1)[0];
+        const favor = CLASS_OUTCOMES[Math.floor(rng() * CLASS_OUTCOMES.length)];
+        return { kind: "ability", kit, favor };
+      },
+    },
+    {
+      take: () => {
+        if (classes.length === 0) return null;
+        const role = classes.splice(Math.floor(rng() * classes.length), 1)[0];
+        const favor = CLASS_OUTCOMES[Math.floor(rng() * CLASS_OUTCOMES.length)];
+        return { kind: "class", role, favor };
+      },
+    },
+  ];
+  for (let index = buckets.length - 1; index > 0; index--) {
+    const swap = Math.floor(rng() * (index + 1));
+    const hold = buckets[index];
+    buckets[index] = buckets[swap];
+    buckets[swap] = hold;
+  }
+  const offers: RewardOffer[] = [];
+  for (const bucket of buckets) {
+    if (offers.length >= count) break;
+    const offer = bucket.take();
+    if (offer) offers.push(offer);
+  }
+  while (offers.length < 2) {
+    const extra = buckets.map((bucket) => bucket.take()).find((offer) => offer);
+    if (!extra) break;
+    offers.push(extra);
+  }
+  return offers;
+}
+
+/** Take one reward. The others go away. A class favor does not lock gear. */
+export function takeReward(campaign: Campaign, index: number, allyId: string): Campaign {
+  const offer = campaign.rewards[index];
+  if (!offer) return campaign;
+  if (offer.kind === "class") {
+    if (!campaign.party.some((ally) => ally.id === allyId && ally.hp > 0)) return campaign;
+    return {
+      ...campaign,
+      rewards: [],
+      party: campaign.party.map((ally) => (ally.id === allyId ? { ...ally, secondary: offer.role } : ally)),
+    };
+  }
+  if (campaign.stash.includes(offer.kit) || campaign.party.some((ally) => ally.ability === offer.kit || ally.equip === offer.kit)) {
+    return { ...campaign, rewards: [] };
+  }
+  return {
+    ...campaign,
+    rewards: [],
+    stash: [...campaign.stash, offer.kit],
+    favors: { ...campaign.favors, [offer.kit]: offer.favor },
+  };
+}
+
+export const RUN_SAVE_KEY = "tactical-survivors-run";
+
+export function saveRun(campaign: Campaign, fast: boolean): string {
+  return JSON.stringify({ version: 1, campaign, fast });
+}
+
+export function loadRun(raw: string | null): SavedRun | null {
+  if (!raw) return null;
+  try {
+    const data = JSON.parse(raw) as { version?: unknown; campaign?: Campaign; fast?: unknown };
+    if (!data || data.version !== 1 || !data.campaign) return null;
+    const campaign = data.campaign;
+    if (typeof campaign.nodeId !== "string" || typeof campaign.gold !== "number" || !Array.isArray(campaign.party)) return null;
+    if (!campaign.progression || typeof campaign.progression.level !== "number") return null;
+    return {
+      version: 1,
+      fast: data.fast === true,
+      campaign: {
+        ...createCampaign(),
+        ...campaign,
+        party: campaign.party,
+        progression: campaign.progression,
+        stash: campaign.stash ?? [],
+        favors: campaign.favors ?? {},
+        offers: campaign.offers ?? [],
+        modes: campaign.modes ?? {},
+        rewards: campaign.rewards ?? [],
+        cleared: campaign.cleared ?? [],
+        seed: campaign.seed ?? 0,
+        wager: campaign.wager ?? null,
+        twist: campaign.twist ?? null,
+      },
+    };
+  } catch {
+    return null;
+  }
 }

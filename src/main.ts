@@ -20,7 +20,11 @@ import {
   stageMapChoice,
   chooseMapBuild,
   takeOffer,
+  takeReward,
   rerollShop,
+  RUN_SAVE_KEY,
+  saveRun,
+  loadRun,
   WAGER_STAKE,
   nodeById,
   recruit,
@@ -98,6 +102,7 @@ const emberButton = required(document.querySelector<HTMLButtonElement>("#ember")
 const flareButton = required(document.querySelector<HTMLButtonElement>("#flare"), "#flare");
 const waitButton = required(document.querySelector<HTMLButtonElement>("#wait"), "#wait");
 const fastButton = required(document.querySelector<HTMLButtonElement>("#fast"), "#fast");
+const newRunButton = required(document.querySelector<HTMLButtonElement>("#new-run"), "#new-run");
 const actMenu = required(document.querySelector<HTMLElement>("#act-menu"), "#act-menu");
 const endTurn = required(document.querySelector<HTMLButtonElement>("#end"), "#end");
 const back = required(document.querySelector<HTMLButtonElement>("#back"), "#back");
@@ -297,6 +302,37 @@ function renderMap() {
     nodes.append(button);
   }
   map.append(nodes);
+  if (campaign.rewards.length > 0) {
+    const picks = document.createElement("div");
+    picks.id = "rewards";
+    campaign.rewards.forEach((offer, index) => {
+      if (offer.kind === "class") {
+        for (const ally of campaign.party) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.dataset.reward = String(index);
+          button.dataset.ally = ally.id;
+          button.textContent = `${offer.role} · ${ally.name}`;
+          button.addEventListener("click", () => {
+            campaign = takeReward(campaign, index, ally.id);
+            render();
+          });
+          picks.append(button);
+        }
+        return;
+      }
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.reward = String(index);
+      button.textContent = `${KITS[offer.kit].name} · ${offer.favor}`;
+      button.addEventListener("click", () => {
+        campaign = takeReward(campaign, index, campaign.party[0]?.id ?? "");
+        render();
+      });
+      picks.append(button);
+    });
+    map.append(picks);
+  }
   const twist = campaign.twist;
   if (twist && twist.nodeId === campaign.nodeId && twist.outcome === "open") {
     const card = document.createElement("div");
@@ -437,7 +473,8 @@ function renderMap() {
     const spark = ally.spell ? "Spark" : "—";
     const ability = ally.ability ? KITS[ally.ability].name : "—";
     const gear = ally.equip ? KITS[ally.equip].name : "—";
-    line.textContent = `${ally.hp}/${ally.maxHp} · ${spark} · ${ability} · ${gear}`;
+    const second = ally.secondary ? ` · ${ally.secondary}` : "";
+    line.textContent = `${ally.hp}/${ally.maxHp} · ${spark} · ${ability} · ${gear}${second}`;
     card.append(name, line);
     party.append(card);
   }
@@ -603,6 +640,14 @@ function renderMapChrome() {
   renderMap();
 }
 
+function persist() {
+  try {
+    localStorage.setItem(RUN_SAVE_KEY, saveRun(campaign, fast));
+  } catch {
+    // The browser can refuse storage. The run still plays.
+  }
+}
+
 function render() {
   syncMathControls();
   if (mode === "map") {
@@ -615,6 +660,7 @@ function render() {
   }
   publishProbe();
   stage.dataset.mode = mode;
+  persist();
 }
 
 function setState(next: GameState) {
@@ -721,6 +767,7 @@ waitButton.addEventListener("click", () => setState(chooseAction(state, "wait"))
 fastButton.addEventListener("click", () => {
   fast = !fast;
   fastButton.setAttribute("aria-pressed", fast ? "true" : "false");
+  persist();
   if (state.spell?.outcome === "open" || state.phase === "cast") return;
   window.clearTimeout(enemyTimer);
   if (mode !== "map" && state.phase === "player" && state.walk.length > 0) {
@@ -813,6 +860,32 @@ if (import.meta.env.DEV && (params.has("pressure") || params.has("crowd"))) {
 
 if (import.meta.env.DEV) {
   board.setProbe(() => publishProbe());
+}
+
+function newRun() {
+  window.clearTimeout(enemyTimer);
+  try {
+    localStorage.removeItem(RUN_SAVE_KEY);
+  } catch {
+    // Storage can be closed. The fresh run still starts.
+  }
+  campaign = createCampaign();
+  fast = false;
+  fastButton.setAttribute("aria-pressed", "false");
+  mode = "map";
+  hover = null;
+  rosterState = null;
+  state = createBattle({ pressure: { enabled: false, waves: [] }, casters: ["mora"] });
+  render();
+}
+
+newRunButton.addEventListener("click", () => newRun());
+
+const savedRun = loadRun(localStorage.getItem(RUN_SAVE_KEY));
+if (savedRun) {
+  campaign = savedRun.campaign;
+  fast = savedRun.fast;
+  fastButton.setAttribute("aria-pressed", fast ? "true" : "false");
 }
 
 render();
