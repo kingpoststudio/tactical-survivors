@@ -16,6 +16,7 @@ import {
   OFFER_COST,
   REROLL_COST,
   settleWager,
+  settleTwist,
   stageMapChoice,
   chooseMapBuild,
   takeOffer,
@@ -37,6 +38,7 @@ import {
   bumpTargets,
   chooseAction,
   emberTargets,
+  flareTargets,
   chooseBuild,
   clickTile,
   commandingUnit,
@@ -93,6 +95,7 @@ const castButton = required(document.querySelector<HTMLButtonElement>("#cast"), 
 const bumpButton = required(document.querySelector<HTMLButtonElement>("#bump"), "#bump");
 const sparkButton = required(document.querySelector<HTMLButtonElement>("#spark"), "#spark");
 const emberButton = required(document.querySelector<HTMLButtonElement>("#ember"), "#ember");
+const flareButton = required(document.querySelector<HTMLButtonElement>("#flare"), "#flare");
 const waitButton = required(document.querySelector<HTMLButtonElement>("#wait"), "#wait");
 const fastButton = required(document.querySelector<HTMLButtonElement>("#fast"), "#fast");
 const actMenu = required(document.querySelector<HTMLElement>("#act-menu"), "#act-menu");
@@ -212,6 +215,7 @@ function renderActions() {
   const bumps = actor ? bumpTargets(state, actor) : [];
   const sparks = actor ? sparkTargets(state, actor) : [];
   const embers = actor ? emberTargets(state, actor) : [];
+  const flares = actor ? flareTargets(state, actor) : [];
   const show =
     mode !== "map" &&
     actor !== null &&
@@ -221,7 +225,8 @@ function renderActions() {
       state.phase === "cast" ||
       bumps.length > 0 ||
       sparks.length > 0 ||
-      embers.length > 0);
+      embers.length > 0 ||
+      flares.length > 0);
   actMenu.hidden = !show;
   if (!show || !actor) return;
   const locked = state.spell?.outcome === "hit" || state.spell?.outcome === "fizzle";
@@ -230,11 +235,14 @@ function renderActions() {
   sparkButton.disabled = locked || sparks.length === 0;
   emberButton.hidden = actor.ability !== "ember";
   emberButton.disabled = locked || embers.length === 0;
+  flareButton.hidden = actor.ability !== "flare";
+  flareButton.disabled = locked || flares.length === 0;
   waitButton.hidden = !state.committed && state.intent !== "act";
   waitButton.disabled = locked;
   bumpButton.setAttribute("aria-pressed", state.spell?.kind === "bump" && state.spell.outcome === "open" ? "true" : "false");
   sparkButton.setAttribute("aria-pressed", state.spell?.kind === "spark" && state.spell.outcome === "open" ? "true" : "false");
   emberButton.setAttribute("aria-pressed", state.spell?.kind === "ember" && state.spell.outcome === "open" ? "true" : "false");
+  flareButton.setAttribute("aria-pressed", state.spell?.kind === "flare" && state.spell.outcome === "open" ? "true" : "false");
 }
 
 function renderCast() {
@@ -281,13 +289,38 @@ function renderMap() {
     button.className = node.id === campaign.nodeId ? "node here" : "node";
     button.dataset.node = node.id;
     const clear = campaign.cleared.includes(node.id) ? " · clear" : "";
-    button.textContent = `${node.name} · ${KIND_LABEL[node.kind]}${clear}`;
+    const modeName = campaign.modes[node.id] ?? "";
+    button.textContent = modeName ? `${node.name} · ${KIND_LABEL[node.kind]} · ${modeName}${clear}` : `${node.name} · ${KIND_LABEL[node.kind]}${clear}`;
     const here = node.id === campaign.nodeId;
     button.disabled = here || !linked(campaign.nodeId, node.id);
     button.addEventListener("click", () => enter(node.id));
     nodes.append(button);
   }
   map.append(nodes);
+  const twist = campaign.twist;
+  if (twist && twist.nodeId === campaign.nodeId && twist.outcome === "open") {
+    const card = document.createElement("div");
+    card.id = "twist";
+    const problem = document.createElement("p");
+    problem.className = "wager-problem";
+    problem.textContent = twist.problem.prompt;
+    card.append(problem);
+    const choices = document.createElement("div");
+    choices.className = "wager-choices";
+    for (const choice of twist.problem.choices) {
+      const pick = document.createElement("button");
+      pick.type = "button";
+      pick.className = "choice";
+      pick.textContent = String(choice);
+      pick.addEventListener("click", () => {
+        campaign = settleTwist(campaign, choice);
+        render();
+      });
+      choices.append(pick);
+    }
+    card.append(choices);
+    map.append(card);
+  }
   if (nodeById(campaign.nodeId).kind === "battle") {
     const fight = document.createElement("button");
     fight.type = "button";
@@ -683,6 +716,7 @@ castButton.addEventListener("click", () => setState(chooseAction(state, "spark")
 bumpButton.addEventListener("click", () => setState(chooseAction(state, "bump")));
 sparkButton.addEventListener("click", () => setState(chooseAction(state, "spark")));
 emberButton.addEventListener("click", () => setState(chooseAction(state, "ember")));
+flareButton.addEventListener("click", () => setState(chooseAction(state, "flare")));
 waitButton.addEventListener("click", () => setState(chooseAction(state, "wait")));
 fastButton.addEventListener("click", () => {
   fast = !fast;

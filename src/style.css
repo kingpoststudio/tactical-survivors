@@ -195,6 +195,7 @@ button:disabled {
 #cast-continue[hidden],
 #spark[hidden],
 #ember[hidden],
+#flare[hidden],
 #wait[hidden] {
   display: none !important;
 }

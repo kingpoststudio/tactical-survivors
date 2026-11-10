@@ -16,10 +16,12 @@ export const REWARD_GOLD = 2;
 export const PACE_ESTIMATE = { activeFightMinutes: 5, fightsPerRun: 8 } as const;
 
 export type NodeKind = "camp" | "battle" | "reward" | "town" | "setup";
-export type KitId = "ember" | "band" | "spear";
+export type KitId = "ember" | "band" | "spear" | "flare";
 export const CLASS_OUTCOMES = ["Warden", "Sorceress", "Scout"] as const;
 export type ClassOutcome = (typeof CLASS_OUTCOMES)[number];
 export const WEAPON_OUTCOMES: readonly KitId[] = ["ember", "band", "spear"];
+export const ENCOUNTER_MODES = ["pile", "twin", "extra"] as const;
+export type EncounterMode = (typeof ENCOUNTER_MODES)[number];
 export const WAGER_STAKE = 2;
 export const REROLL_COST = 1;
 export const OFFER_COST = 2;
@@ -44,6 +46,7 @@ export const KITS: Record<KitId, { name: string; favors: ClassOutcome; slot: "ab
   ember: { name: "Ember", favors: "Sorceress", slot: "ability" },
   band: { name: "Band", favors: "Warden", slot: "equip" },
   spear: { name: "Spear", favors: "Scout", slot: "equip" },
+  flare: { name: "Flare", favors: "Sorceress", slot: "ability" },
 };
 
 export interface Ally {
@@ -58,7 +61,7 @@ export interface Ally {
   col: number;
   row: number;
   spell: boolean;
-  ability: "ember" | null;
+  ability: "ember" | "flare" | null;
   equip: "band" | "spear" | null;
 }
 
@@ -66,6 +69,13 @@ export interface DropRoll {
   weapon: KitId | null;
   favor: ClassOutcome;
   build: BuildId | null;
+  ability: "flare" | null;
+}
+
+export interface Twist {
+  nodeId: string;
+  problem: MathProblem;
+  outcome: "open" | "hit" | "fizzle";
 }
 
 export interface Wager {
@@ -97,6 +107,8 @@ export interface Campaign {
   wager: Wager | null;
   seed: number;
   offers: ShopOffer[];
+  modes: Partial<Record<string, EncounterMode>>;
+  twist: Twist | null;
 }
 
 export type TravelResult =
@@ -171,6 +183,8 @@ export function createCampaign(): Campaign {
     wager: null,
     seed: 0,
     offers: [],
+    modes: {},
+    twist: null,
   };
 }
 
@@ -238,7 +252,7 @@ function claimReward(campaign: Campaign): Campaign {
 export function travel(campaign: Campaign, nodeId: string): TravelResult {
   if (!linked(campaign.nodeId, nodeId)) return { kind: "stay", campaign };
   const node = nodeById(nodeId);
-  let next: Campaign = { ...campaign, nodeId };
+  let next: Campaign = { ...revealEncounter(campaign, nodeId), nodeId };
   if (node.kind === "reward") next = claimReward(next);
   if (node.kind === "battle") {
     return { kind: "battle", campaign: { ...next, lastEvent: "A fight starts." }, battle: startBattle(next) };
@@ -257,11 +271,13 @@ function pick<T>(items: readonly T[], rng: () => number): T {
 export function rollDrop(rng: () => number, owned: readonly KitId[], taken: readonly BuildId[]): DropRoll | null {
   const weapons = WEAPON_OUTCOMES.filter((id) => !owned.includes(id));
   const builds = BUILD_POOL.map((offer) => offer.id).filter((id) => !taken.includes(id));
-  if (weapons.length === 0 && builds.length === 0) return null;
+  if (weapons.length === 0 && builds.length === 0 && !owned.includes("flare")) return null;
+  const abilities = owned.includes("flare") ? [] : (["flare"] as const);
   return {
     weapon: weapons.length > 0 ? pick(weapons, rng) : null,
     favor: pick(CLASS_OUTCOMES, rng),
     build: builds.length > 0 ? pick(builds, rng) : null,
+    ability: abilities.length > 0 ? pick(abilities, rng) : null,
   };
 }
 
@@ -283,6 +299,11 @@ export function collectDrops(
       kits.push(drop.weapon);
       have.push(drop.weapon);
       favors[drop.weapon] = drop.favor;
+    }
+    if (drop.ability && !have.includes(drop.ability)) {
+      kits.push(drop.ability);
+      have.push(drop.ability);
+      favors[drop.ability] = drop.favor;
     }
     if (drop.build && !known.includes(drop.build)) {
       builds.push(drop.build);
@@ -311,7 +332,7 @@ export function equip(campaign: Campaign, allyId: string, kit: KitId): Campaign 
   if (previous) stash.push(previous);
   const party = campaign.party.map((item) => {
     if (item.id !== allyId) return item;
-    if (slot === "ability") return { ...item, ability: "ember" as const };
+    if (slot === "ability") return { ...item, ability: kit === "flare" ? ("flare" as const) : ("ember" as const) };
     return { ...item, equip: kit === "spear" ? ("spear" as const) : ("band" as const) };
   });
   return { ...campaign, stash, party };
@@ -347,7 +368,8 @@ function restored(party: readonly Ally[], units: readonly Unit[]): Ally[] {
 
 export function returnFromBattle(campaign: Campaign, battle: GameState, rng: () => number = Math.random): Campaign {
   if (battle.phase !== "victory") return campaign;
-  const defeated = battle.units.filter((unit) => unit.side === "enemy" && unit.hp <= 0).length;
+  const mode = campaign.modes[campaign.nodeId];
+  const defeated = battle.units.filter((unit) => unit.side === "enemy" && unit.hp <= 0).length + (mode === "extra" ? 1 : 0);
   const dropped = collectDrops(defeated, ownedKits(campaign), battle.progression.taken, rng);
   let party = battle.winner === "player" ? restored(campaign.party, battle.units) : campaign.party;
   for (const id of dropped.builds) party = applyAllyBuild(party, id);
@@ -364,13 +386,14 @@ export function returnFromBattle(campaign: Campaign, battle: GameState, rng: () 
     },
   };
   if (battle.winner !== "player") return { ...carried, lastEvent: "The meadow holds. No gold." };
-  const gold = campaign.gold + BATTLE_GOLD;
+  const payout = mode === "twin" ? BATTLE_GOLD * 2 : BATTLE_GOLD;
+  const gold = campaign.gold + payout;
   const cleared = campaign.cleared.includes(campaign.nodeId) ? campaign.cleared : [...campaign.cleared, campaign.nodeId];
   return {
     ...carried,
     gold,
     cleared,
-    lastEvent: `Clear. ${campaign.gold} + ${BATTLE_GOLD} = ${gold}.`,
+    lastEvent: `Clear. ${campaign.gold} + ${payout} = ${gold}.`,
   };
 }
 
@@ -532,4 +555,46 @@ export function chooseMapBuild(campaign: Campaign, id: BuildId): Campaign {
   let party = campaign.party;
   for (const build of added) party = applyAllyBuild(party, build);
   return { ...campaign, progression: accepted.progression, party };
+}
+
+function foldName(nodeId: string): number {
+  let hash = 2166136261;
+  for (const char of nodeId) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+  return hash >>> 0;
+}
+
+/** The twist for a place. Same node and seed, same twist. */
+export function encounterMode(nodeId: string, seed: number): EncounterMode {
+  const rng = mixSeed((foldName(nodeId) ^ (seed >>> 0)) >>> 0);
+  return ENCOUNTER_MODES[Math.floor(rng() * ENCOUNTER_MODES.length)];
+}
+
+function revealEncounter(campaign: Campaign, nodeId: string): Campaign {
+  let next = campaign;
+  if (!next.modes[nodeId]) {
+    next = { ...next, modes: { ...next.modes, [nodeId]: encounterMode(nodeId, next.seed) } };
+  }
+  if (next.modes[nodeId] === "pile" && next.twist?.nodeId !== nodeId) {
+    const rng = mixSeed((foldName(nodeId) ^ (next.seed >>> 0)) >>> 0);
+    next = { ...next, twist: { nodeId, problem: makeProblem(next.difficulty, rng), outcome: "open" } };
+  }
+  return next;
+}
+
+/** A pile pays the answer in gold. A wrong number pays nothing. */
+export function settleTwist(campaign: Campaign, given: number): Campaign {
+  const twist = campaign.twist;
+  if (!twist || twist.outcome !== "open" || twist.nodeId !== campaign.nodeId) return campaign;
+  const grade = gradeAnswer(twist.problem, given);
+  if (!grade) return campaign;
+  if (!grade.correct) {
+    return { ...campaign, twist: { ...twist, outcome: "fizzle" }, lastEvent: twist.problem.prompt };
+  }
+  const gold = campaign.gold + twist.problem.answer;
+  return {
+    ...campaign,
+    gold,
+    twist: { ...twist, outcome: "hit" },
+    lastEvent: `${campaign.gold} + ${twist.problem.answer} = ${gold}.`,
+  };
 }

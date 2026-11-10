@@ -44,7 +44,7 @@ const BRUSH: ReadonlyArray<readonly [number, number]> = [
 export type Side = "player" | "enemy";
 export type Phase = "player" | "enemy" | "level" | "victory" | "cast";
 export type Intent = "move" | "act" | "strike" | "cast";
-export type ActionKind = "bump" | "spark" | "ember";
+export type ActionKind = "bump" | "spark" | "ember" | "flare";
 export type Terrain = "plain" | "brush" | "stone";
 
 export interface SpellCast {
@@ -77,7 +77,7 @@ export interface Unit {
   acted: boolean;
   tier?: number;
   /** Equipped fire ability. Favors a sorceress, and any class can wear it. */
-  ability?: "ember" | null;
+  ability?: "ember" | "flare" | null;
 }
 
 export interface GameState {
@@ -264,6 +264,11 @@ export function emberTargets(g: GameState, actor: Unit): Unit[] {
   return foesInReach(actor, g.units);
 }
 
+export function flareTargets(g: GameState, actor: Unit): Unit[] {
+  if (actor.ability !== "flare") return [];
+  return foesInReach(actor, g.units);
+}
+
 function readyStriker(g: GameState): Unit | null {
   return living(g.units).find((unit) => unit.side === "player" && !unit.acted) ?? null;
 }
@@ -287,6 +292,7 @@ export function mathReady(g: GameState): boolean {
   if (g.selectedId !== actor.id) return false;
   if (spell.kind === "bump") return beside(actor, foe);
   if (spell.kind === "ember") return actor.ability === "ember" && inSpellRange(actor, foe);
+  if (spell.kind === "flare") return actor.ability === "flare" && inSpellRange(actor, foe);
   return g.casters.includes(actor.id) && inSpellRange(actor, foe);
 }
 
@@ -298,8 +304,9 @@ export function showFoe(g: GameState, id: string): GameState {
   if (!striker) return { ...g, focusId: id, selectedId: id };
   const sparkOk = !!actor && sparkTargets(g, actor).some((unit) => unit.id === id);
   const emberOk = !!actor && emberTargets(g, actor).some((unit) => unit.id === id);
+  const flareOk = !!actor && flareTargets(g, actor).some((unit) => unit.id === id);
   const bumpOk = !!actor && bumpTargets(g, actor).some((unit) => unit.id === id);
-  const kind: ActionKind = sparkOk && !bumpOk ? "spark" : emberOk && !bumpOk ? "ember" : "bump";
+  const kind: ActionKind = sparkOk && !bumpOk ? "spark" : emberOk && !bumpOk ? "ember" : flareOk && !bumpOk ? "flare" : "bump";
   return {
     ...g,
     selectedId: actor ? actor.id : id,
@@ -314,7 +321,8 @@ function presentChoice(g: GameState): GameState {
   const bumps = bumpTargets(g, actor);
   const sparks = sparkTargets(g, actor);
   const embers = emberTargets(g, actor);
-  if (bumps.length === 0 && sparks.length === 0 && embers.length === 0) {
+  const flares = flareTargets(g, actor);
+  if (bumps.length === 0 && sparks.length === 0 && embers.length === 0 && flares.length === 0) {
     return settle({
       ...g,
       units: withActed(g.units, actor.id),
@@ -326,8 +334,8 @@ function presentChoice(g: GameState): GameState {
       committed: false,
     });
   }
-  const kind: ActionKind = bumps.length > 0 ? "bump" : sparks.length > 0 ? "spark" : "ember";
-  const foe = (kind === "bump" ? bumps : kind === "spark" ? sparks : embers)[0];
+  const kind: ActionKind = bumps.length > 0 ? "bump" : sparks.length > 0 ? "spark" : embers.length > 0 ? "ember" : "flare";
+  const foe = (kind === "bump" ? bumps : kind === "spark" ? sparks : kind === "ember" ? embers : flares)[0];
   return {
     ...g,
     intent: "act",
@@ -360,7 +368,13 @@ export function chooseAction(g: GameState, kind: ActionKind | "wait"): GameState
     });
   }
   const targets =
-    kind === "bump" ? bumpTargets(base, actor) : kind === "ember" ? emberTargets(base, actor) : sparkTargets(base, actor);
+    kind === "bump"
+      ? bumpTargets(base, actor)
+      : kind === "ember"
+        ? emberTargets(base, actor)
+        : kind === "flare"
+          ? flareTargets(base, actor)
+          : sparkTargets(base, actor);
   if (targets.length === 0) return g;
   const foe = targets.find((unit) => unit.id === base.focusId) ?? targets[0];
   return {
@@ -390,7 +404,7 @@ export function answerCast(g: GameState, given: number): GameState {
   const target = g.units.find((unit) => unit.id === g.spell?.targetId);
   if (!caster || !target) return g;
   const prompt = g.spell.problem.prompt;
-  const name = g.spell.kind === "bump" ? "Bump" : g.spell.kind === "ember" ? "Ember" : "Spark";
+  const name = g.spell.kind === "bump" ? "Bump" : g.spell.kind === "ember" ? "Ember" : g.spell.kind === "flare" ? "Flare" : "Spark";
   if (!verdict.correct) {
     return {
       ...g,
@@ -901,7 +915,8 @@ export function clickTile(g: GameState, col: number, row: number): GameState {
         g.committed ||
         bumpTargets(g, actor).length > 0 ||
         sparkTargets(g, actor).length > 0 ||
-        emberTargets(g, actor).length > 0
+        emberTargets(g, actor).length > 0 ||
+        flareTargets(g, actor).length > 0
       ) {
         return presentChoice(g);
       }
@@ -911,6 +926,7 @@ export function clickTile(g: GameState, col: number, row: number): GameState {
     const bumps = bumpTargets(picked, occupant);
     const sparks = sparkTargets(picked, occupant);
     const embers = emberTargets(picked, occupant);
+    const flares = flareTargets(picked, occupant);
     const next: GameState = {
       ...g,
       selectedId: occupant.id,
@@ -920,9 +936,9 @@ export function clickTile(g: GameState, col: number, row: number): GameState {
       focusId: null,
       spell: null,
     };
-    if (bumps.length === 0 && sparks.length === 0 && embers.length === 0) return next;
-    const kind: ActionKind = bumps.length > 0 ? "bump" : sparks.length > 0 ? "spark" : "ember";
-    const foe = (kind === "bump" ? bumps : kind === "spark" ? sparks : embers)[0];
+    if (bumps.length === 0 && sparks.length === 0 && embers.length === 0 && flares.length === 0) return next;
+    const kind: ActionKind = bumps.length > 0 ? "bump" : sparks.length > 0 ? "spark" : embers.length > 0 ? "ember" : "flare";
+    const foe = (kind === "bump" ? bumps : kind === "spark" ? sparks : kind === "ember" ? embers : flares)[0];
     return { ...next, focusId: foe.id, spell: openProblem(next, occupant, foe, kind) };
   }
   if (actor && g.intent === "move" && !g.committed && !occupant) {
@@ -1041,12 +1057,17 @@ export function attackIdsFor(g: GameState, _reach: Reach): Set<string> {
     for (const foe of emberTargets(g, commanding)) ids.add(foe.id);
     return ids;
   }
+  if (kind === "flare") {
+    for (const foe of flareTargets(g, commanding)) ids.add(foe.id);
+    return ids;
+  }
   if (kind === "bump" || g.intent === "act" || g.phase === "cast") {
     for (const foe of bumpTargets(g, commanding)) ids.add(foe.id);
     if (!kind || kind === "bump") {
       if (g.intent === "act" || g.phase === "cast") {
         for (const foe of sparkTargets(g, commanding)) ids.add(foe.id);
         for (const foe of emberTargets(g, commanding)) ids.add(foe.id);
+        for (const foe of flareTargets(g, commanding)) ids.add(foe.id);
       }
     }
     return ids;

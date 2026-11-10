@@ -8,6 +8,7 @@ import {
   buyBun,
   chooseMapBuild,
   createCampaign,
+  encounterMode,
   equip,
   linked,
   offerWager,
@@ -16,6 +17,7 @@ import {
   REROLL_COST,
   rerollShop,
   rollDrop,
+  settleTwist,
   settleWager,
   stageMapChoice,
   takeOffer,
@@ -160,7 +162,7 @@ fought = {
 carried = returnFromBattle(carried, fought, () => 0);
 assert.equal(carried.progression.level, 1);
 assert.deepEqual(carried.progression.taken, ["long-stride", "brush-cover", "focused-strike", "ward-plate"]);
-assert.deepEqual(carried.stash, ["ember", "band", "spear"]);
+assert.deepEqual(carried.stash, ["ember", "flare", "band", "spear"]);
 assert.equal(carried.favors.ember, "Warden");
 assert.equal(carried.party.find((ally) => ally.id === "ilya")?.atk, 6);
 assert.equal(carried.party.find((ally) => ally.id === "ilya")?.def, 3);
@@ -169,7 +171,7 @@ carried = equip(carried, "ilya", "band");
 assert.equal(carried.party.find((ally) => ally.id === "ilya")?.role, "Warden");
 assert.equal(carried.party.find((ally) => ally.id === "ilya")?.ability, "ember");
 assert.equal(carried.party.find((ally) => ally.id === "ilya")?.equip, "band");
-assert.deepEqual(carried.stash, ["spear"]);
+assert.deepEqual(carried.stash, ["flare", "spear"]);
 carried = buyBun({ ...carried, nodeId: "town", gold: 5 });
 assert.equal(carried.bunBought, true);
 assert.equal(carried.gold, 3);
@@ -205,7 +207,10 @@ const held = presentStep(oak);
 assert.equal(held.spell?.outcome, "open");
 assert.equal(held.spell?.problem.prompt, prompt);
 assert.equal(presentationDelay("walk", true) < presentationDelay("walk", false), true);
+assert.equal(presentationDelay("enemy", true) < presentationDelay("enemy", false), true);
 assert.equal(presentStep(held).spell?.outcome, "open");
+assert.equal(presentStep(held).spell?.problem.prompt, prompt);
+assert.equal(presentStep(held).spell?.problem.answer, oak.spell?.problem.answer);
 const cast = answerCast(oak, oak.spell?.problem.answer ?? -1);
 assert.equal(cast.spell?.outcome, "hit");
 assert.equal(cast.spell?.damage, oak.spell?.problem.answer);
@@ -296,5 +301,75 @@ const nextFight = startBattle(bench);
 assert.equal(nextFight.units.find((unit) => unit.id === "ilya")?.ability, "ember");
 assert.equal(nextFight.units.find((unit) => unit.id === "ilya")?.atk, 6);
 assert.ok(nextFight.progression.taken.includes("focused-strike"));
+
+assert.equal(encounterMode("meadow", 4), encounterMode("meadow", 4));
+const seen = new Set([1, 2, 3, 4, 5, 6, 7, 8].map((seed) => encounterMode("glen", seed)));
+assert.ok(seen.size >= 2);
+const revealed = travel(createCampaign(), "glen");
+assert.equal(revealed.kind, "map");
+if (revealed.kind !== "map") throw new Error("glen");
+assert.equal(revealed.campaign.modes.glen, encounterMode("glen", 0));
+const againGlen = travel({ ...revealed.campaign, nodeId: "camp" }, "glen");
+assert.equal(againGlen.kind, "map");
+if (againGlen.kind !== "map") throw new Error("glen again");
+assert.equal(againGlen.campaign.modes.glen, revealed.campaign.modes.glen);
+
+const pile = {
+  ...createCampaign(),
+  nodeId: "glen",
+  modes: { glen: "pile" as const },
+  twist: {
+    nodeId: "glen",
+    problem: { kind: "count" as const, prompt: "● ●", caption: "How many?", answer: 2, choices: [2, 1, 0, 3] },
+    outcome: "open" as const,
+  },
+};
+const pileMiss = settleTwist(pile, 99);
+assert.equal(pileMiss.gold, 0);
+assert.notEqual(pileMiss.gold, 99);
+assert.equal(pileMiss.twist?.outcome, "fizzle");
+const pileHit = settleTwist(pile, 2);
+assert.equal(pileHit.gold, 2);
+assert.equal(pileHit.twist?.outcome, "hit");
+
+const oneDown = startBattle(createCampaign());
+const victory = {
+  ...oneDown,
+  phase: "victory" as const,
+  winner: "player" as const,
+  units: oneDown.units.map((unit) => (unit.id === "ash" ? { ...unit, hp: 0 } : unit)),
+};
+const plainGold = returnFromBattle({ ...createCampaign(), nodeId: "meadow" }, victory, () => 0);
+const twinGold = returnFromBattle({ ...createCampaign(), nodeId: "meadow", modes: { meadow: "twin" } }, victory, () => 0);
+assert.equal(plainGold.gold, BATTLE_GOLD);
+assert.equal(twinGold.gold, BATTLE_GOLD * 2);
+const extraDrop = returnFromBattle({ ...createCampaign(), nodeId: "meadow", modes: { meadow: "extra" } }, victory, () => 0);
+assert.ok(extraDrop.stash.length > plainGold.stash.length);
+
+assert.equal(rollDrop(() => 0, [], [])?.ability, "flare");
+let flare = equip({ ...createCampaign(), stash: ["flare"], favors: { flare: "Sorceress" }, gold: 5, nodeId: "town" }, "ilya", "flare");
+assert.equal(flare.party.find((ally) => ally.id === "ilya")?.role, "Warden");
+assert.equal(flare.party.find((ally) => ally.id === "ilya")?.ability, "flare");
+flare = buyBun(flare);
+assert.equal(flare.bunBought, true);
+const flareFight = startBattle(flare);
+assert.equal(flareFight.units.find((unit) => unit.id === "ilya")?.ability, "flare");
+let flareCast = {
+  ...flareFight,
+  units: flareFight.units.map((unit) => (unit.id === "ash" ? { ...unit, col: 1, row: 5 } : unit)),
+};
+flareCast = clickTile(flareCast, 1, 6);
+flareCast = chooseAction(flareCast, "flare");
+assert.equal(flareCast.spell?.kind, "flare");
+assert.equal(flareCast.spell?.outcome, "open");
+const flarePrompt = flareCast.spell?.problem.prompt ?? "";
+assert.equal(presentStep(flareCast).spell?.problem.prompt, flarePrompt);
+const flareHit = answerCast(flareCast, flareCast.spell?.problem.answer ?? -1);
+assert.equal(flareHit.spell?.damage, flareCast.spell?.problem.answer);
+assert.notEqual(flareHit.spell?.damage, 99);
+const back = returnFromBattle(flare, { ...flareFight, phase: "victory", winner: "player" }, () => 0);
+assert.equal(back.bunBought, true);
+assert.equal(back.party.find((ally) => ally.id === "ilya")?.ability, "flare");
+assert.equal(startBattle(back).units.find((unit) => unit.id === "ilya")?.ability, "flare");
 
 console.log("map rewards ok");
