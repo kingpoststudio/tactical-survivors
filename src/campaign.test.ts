@@ -35,6 +35,7 @@ import {
   routeRank,
   scaleFor,
   setAnswerMode,
+  summaryLines,
   setDifficulty,
   startBattle,
   travel,
@@ -526,10 +527,21 @@ assert.equal(boss.units.find((unit) => unit.id === "ash")?.name, "Cinderheart");
 assert.ok((boss.units.find((unit) => unit.id === "ash")?.maxHp ?? 0) > 12);
 const cleared = returnFromBattle(route, { ...boss, phase: "victory", winner: "player" }, () => 0);
 assert.equal(cleared.summary, "victory");
+const lines = summaryLines(cleared);
+assert.equal(lines?.outcome, "victory");
+assert.deepEqual(lines?.party, cleared.party.map((ally) => ally.name));
+assert.equal(lines?.level, cleared.progression.level);
+assert.equal(lines?.xp, cleared.progression.xp);
+assert.deepEqual(lines?.builds, cleared.progression.taken);
+assert.equal(lines?.gold, cleared.gold);
+assert.ok(lines && lines.gear.length >= cleared.stash.length);
 assert.equal("clock" in cleared, false);
 assert.notEqual(travel(cleared, "gate").kind, "stay");
 const fallen = returnFromBattle(route, { ...boss, phase: "victory", winner: "enemy" });
 assert.equal(fallen.summary, "defeat");
+assert.equal(summaryLines(fallen)?.outcome, "defeat");
+assert.deepEqual(summaryLines(fallen)?.party, fallen.party.map((ally) => ally.name));
+assert.equal(summaryLines(createCampaign()), null);
 assert.notEqual(travel(fallen, "gate").kind, "stay");
 assert.deepEqual(typeDrop("Brute", 4), typeDrop("Brute", 4));
 assert.ok(typeDrop("Brute", 4).rarity === "common" || typeDrop("Brute", 4).rarity === "rare");

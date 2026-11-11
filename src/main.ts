@@ -36,6 +36,7 @@ import {
   setAnswerMode,
   setDifficulty,
   startBattle,
+  summaryLines,
   travel,
   type Campaign,
 } from "./campaign.ts";
@@ -312,14 +313,32 @@ function renderMap() {
   }
   map.append(nodes);
   if (campaign.summary) {
+    const lines = summaryLines(campaign);
     const card = document.createElement("section");
     card.id = "summary";
     const title = document.createElement("h2");
-    title.textContent = campaign.summary === "victory" ? "Victory" : "Defeat";
-    const line = document.createElement("p");
-    const kits = campaign.party.flatMap((ally) => [ally.ability, ally.equip].filter(Boolean)).join(" ");
-    line.textContent = `Level ${campaign.progression.level} · XP ${campaign.progression.xp} · Gold ${campaign.gold} · ${buildNames(campaign.progression.taken) || "—"} · ${kits || "—"}`;
-    card.append(title, line);
+    title.textContent = lines?.outcome === "victory" ? "Victory" : "Defeat";
+    const party = document.createElement("p");
+    party.dataset.field = "party";
+    party.textContent = lines?.party.join(", ") ?? "";
+    const level = document.createElement("p");
+    level.dataset.field = "level";
+    level.textContent = `Level ${lines?.level ?? 0} · XP ${lines?.xp ?? 0}`;
+    const builds = document.createElement("p");
+    builds.dataset.field = "builds";
+    builds.textContent = buildNames(lines?.builds ?? []) || "—";
+    const gear = document.createElement("p");
+    gear.dataset.field = "gear";
+    gear.textContent = lines?.gear.join(", ") || "—";
+    const gold = document.createElement("p");
+    gold.dataset.field = "gold";
+    gold.textContent = `Gold ${lines?.gold ?? 0}`;
+    const again = document.createElement("button");
+    again.type = "button";
+    again.id = "summary-new";
+    again.textContent = "New run";
+    again.addEventListener("click", () => newRun());
+    card.append(title, party, level, builds, gear, gold, again);
     map.append(card);
   }
   if (campaign.found.length > 0) {

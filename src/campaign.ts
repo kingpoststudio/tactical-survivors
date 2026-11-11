@@ -53,7 +53,30 @@ export const WORLD: readonly WorldNode[] = [
   { id: "crown", name: "Crown", kind: "boss", links: ["gate"] },
 ];
 
-/** Eight fights is a pacing target, not a limit. Crown is the last stop. */
+export interface RunSummary {
+  outcome: "victory" | "defeat";
+  party: string[];
+  level: number;
+  xp: number;
+  builds: BuildId[];
+  gear: string[];
+  gold: number;
+}
+
+/** Fields shown when a run ends. Null until Crown is won or a fight is lost. */
+export function summaryLines(campaign: Campaign): RunSummary | null {
+  if (!campaign.summary) return null;
+  const worn = campaign.party.flatMap((ally) => [ally.ability, ally.equip].filter((kit): kit is KitId => kit !== null));
+  return {
+    outcome: campaign.summary,
+    party: campaign.party.map((ally) => ally.name),
+    level: campaign.progression.level,
+    xp: campaign.progression.xp,
+    builds: [...campaign.progression.taken],
+    gear: [...campaign.stash, ...worn].map((kit) => KITS[kit].name),
+    gold: campaign.gold,
+  };
+}
 export const ROUTE = ["meadow", "briar", "hollow", "marsh", "ridge", "orchard", "gate", "crown"] as const;
 
 export function routeRank(nodeId: string): number {
