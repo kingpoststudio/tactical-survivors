@@ -19,6 +19,8 @@ const COLOR = {
   move: 0xe6c27a,
   path: 0xf4e2a8,
   attack: 0xa33b32,
+  attackTile: 0xc45a4a,
+  abilityTile: 0x7a6bb5,
   select: 0xf7f1e4,
   hover: 0x2a2622,
   barTrack: 0x2a2622,
@@ -29,6 +31,8 @@ export interface BoardView {
   selectedId: string | null;
   phase: Phase;
   moveKeys: Set<string>;
+  attackKeys: Set<string>;
+  abilityKeys: Set<string>;
   attackIds: Set<string>;
   path: readonly Tile[];
   hover: Tile | null;
@@ -250,6 +254,18 @@ export function createBoard(parent: HTMLElement, manifest: AssetManifest = EMPTY
     color: COLOR.path,
     transparent: true,
     opacity: 0.85,
+    depthWrite: false,
+  });
+  const attackTileMaterial = new THREE.MeshBasicMaterial({
+    color: COLOR.attackTile,
+    transparent: true,
+    opacity: 0.55,
+    depthWrite: false,
+  });
+  const abilityTileMaterial = new THREE.MeshBasicMaterial({
+    color: COLOR.abilityTile,
+    transparent: true,
+    opacity: 0.55,
     depthWrite: false,
   });
   const attackMaterial = new THREE.MeshBasicMaterial({
@@ -613,9 +629,11 @@ export function createBoard(parent: HTMLElement, manifest: AssetManifest = EMPTY
     const pathKeys = new Set(view.path.slice(1).map((tile) => tileKey(tile.col, tile.row)));
     for (const [code, cell] of cells) {
       const onPath = pathKeys.has(code);
+      const ability = view.abilityKeys.has(code);
+      const attack = view.attackKeys.has(code);
       const movable = view.moveKeys.has(code);
-      cell.mark.visible = onPath || movable;
-      cell.mark.material = onPath ? pathMaterial : moveMaterial;
+      cell.mark.visible = onPath || ability || attack || movable;
+      cell.mark.material = onPath ? pathMaterial : ability ? abilityTileMaterial : attack ? attackTileMaterial : moveMaterial;
     }
 
     const selected = view.units.find((unit) => unit.id === view.selectedId && unit.hp > 0);

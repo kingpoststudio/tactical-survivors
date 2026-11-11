@@ -5,6 +5,7 @@ import {
   BUN_HP,
   PACE_ESTIMATE,
   RECRUIT_COST,
+  benchAlly,
   buyBun,
   chooseMapBuild,
   createCampaign,
@@ -21,6 +22,7 @@ import {
   rollDrop,
   RUN_SAVE_KEY,
   saveRun,
+  swapKit,
   settleTwist,
   settleWager,
   stageMapChoice,
@@ -28,13 +30,14 @@ import {
   takeReward,
   WAGER_STAKE,
   recruit,
+  recallAlly,
   returnFromBattle,
   setAnswerMode,
   setDifficulty,
   startBattle,
   travel,
 } from "./campaign.ts";
-import { answerCast, chooseAction, clickTile, createBattle, presentStep, presentationDelay } from "./game.ts";
+import { answerCast, chooseAction, clickTile, createBattle, presentStep, presentationDelay, previewAction, rangeKeys, turnOrder } from "./game.ts";
 
 const camp = createCampaign();
 assert.equal(camp.nodeId, "camp");
@@ -449,5 +452,52 @@ const parsed = JSON.parse(raw) as { clock?: unknown; deadline?: unknown };
 assert.equal("clock" in parsed, false);
 assert.equal("deadline" in parsed, false);
 assert.equal(RUN_SAVE_KEY, "tactical-survivors-run");
+
+let swapped = equip({ ...createCampaign(), stash: ["ember"], favors: { ember: "Sorceress" } }, "ilya", "ember");
+swapped = swapKit(swapped, "ilya", "penn", "ability");
+assert.equal(swapped.party.find((ally) => ally.id === "ilya")?.ability, null);
+assert.equal(swapped.party.find((ally) => ally.id === "penn")?.role, "Scout");
+assert.equal(swapped.party.find((ally) => ally.id === "penn")?.ability, "ember");
+swapped = swapKit(swapped, "penn", "ilya", "ability");
+assert.equal(swapped.party.find((ally) => ally.id === "ilya")?.role, "Warden");
+assert.equal(swapped.party.find((ally) => ally.id === "ilya")?.ability, "ember");
+const benched = benchAlly({ ...swapped, gold: 3 }, "penn");
+assert.equal(benched.gold, 2);
+assert.equal(benched.party.find((ally) => ally.id === "penn")?.benched, true);
+assert.equal(startBattle(benched).units.some((unit) => unit.id === "penn"), false);
+assert.equal(startBattle(benched).units.find((unit) => unit.id === "ilya")?.ability, "ember");
+const recalled = recallAlly(benched, "penn");
+assert.equal(recalled.party.find((ally) => ally.id === "penn")?.benched, false);
+assert.equal(recalled.gold, 1);
+const keptRun = loadRun(saveRun(benched, true));
+assert.equal(keptRun?.fast, true);
+assert.equal(keptRun?.campaign.party.find((ally) => ally.id === "ilya")?.ability, "ember");
+assert.equal(keptRun?.campaign.party.find((ally) => ally.id === "penn")?.benched, true);
+assert.equal(keptRun?.campaign.progression.level, benched.progression.level);
+
+const field = clickTile(createBattle(), 3, 6);
+const hpBefore = field.units.map((unit) => unit.hp).join();
+const spellBefore = field.spell;
+const looked = previewAction(field, "bump");
+assert.equal(field.spell, spellBefore);
+assert.equal(field.units.map((unit) => unit.hp).join(), hpBefore);
+assert.equal(looked, null);
+const near = {
+  ...createBattle(),
+  units: createBattle().units.map((unit) => (unit.id === "vetch" ? { ...unit, col: 1, row: 5 } : unit.id === "ilya" ? { ...unit, ability: "ember" as const } : unit)),
+};
+const selected = clickTile(near, 1, 6);
+const ranges = rangeKeys(selected);
+assert.ok(ranges.move.length > 0);
+assert.ok(ranges.attack.includes("1,5"));
+assert.ok(ranges.ability.includes("1,5"));
+const orderIds = turnOrder(selected).map((step) => step.id);
+assert.equal(orderIds[0], "ilya");
+assert.ok(orderIds.includes("vetch"));
+const open = chooseAction(selected, "ember");
+assert.equal(open.spell?.outcome, "open");
+assert.equal(presentStep(open).spell?.outcome, "open");
+assert.equal(presentStep(open).spell?.problem.prompt, open.spell?.problem.prompt);
+assert.equal(presentStep(open).units.find((unit) => unit.id === "vetch")?.hp, open.units.find((unit) => unit.id === "vetch")?.hp);
 
 console.log("map rewards ok");

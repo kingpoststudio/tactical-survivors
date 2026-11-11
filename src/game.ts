@@ -1086,6 +1086,51 @@ export function moveKeysFor(g: GameState, reach: Reach): Set<string> {
   return keys;
 }
 
+export function rangeKeys(g: GameState): { move: string[]; attack: string[]; ability: string[] } {
+  const reach = selectionReach(g);
+  const actor = commandingUnit(g);
+  const move = [...moveKeysFor(g, reach)];
+  if (!actor) return { move, attack: [], ability: [] };
+  const attack = bumpTargets(g, actor).map((unit) => tileKey(unit.col, unit.row));
+  const ability = [...sparkTargets(g, actor), ...emberTargets(g, actor), ...flareTargets(g, actor)].map((unit) =>
+    tileKey(unit.col, unit.row),
+  );
+  return { move, attack, ability };
+}
+
+export function turnOrder(g: GameState): { id: string; side: Side }[] {
+  const players = living(g.units)
+    .filter((unit) => unit.side === "player" && !unit.acted)
+    .sort((a, b) => (ROSTER_ORDER.get(a.id) ?? 99) - (ROSTER_ORDER.get(b.id) ?? 99));
+  const enemies = living(g.units)
+    .filter((unit) => unit.side === "enemy")
+    .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+  return [...players, ...enemies].map((unit) => ({ id: unit.id, side: unit.side }));
+}
+
+/** The problem that would open. It does not change HP or the open prompt. */
+export function previewAction(g: GameState, kind: ActionKind): { prompt: string; answer: number } | null {
+  const actor = commandingUnit(g);
+  if (!actor) return null;
+  const foes =
+    kind === "bump"
+      ? bumpTargets(g, actor)
+      : kind === "spark"
+        ? sparkTargets(g, actor)
+        : kind === "ember"
+          ? emberTargets(g, actor)
+          : kind === "flare"
+            ? flareTargets(g, actor)
+            : [];
+  const foe = foes[0];
+  if (!foe) return null;
+  const problem =
+    kind === "bump"
+      ? makeStrikeProblem(strikeDamage(actor, foe, g.progression.taken, g.progressionRules.coverDefense), g.random)
+      : makeProblem(g.difficulty, g.random);
+  return { prompt: problem.prompt, answer: problem.answer };
+}
+
 export function hoverPath(g: GameState, hover: Tile | null, reach: Reach, attackIds: Set<string>): Tile[] {
   const commanding = commandingUnit(g);
   if (!hover || !commanding || g.intent !== "move") return [];

@@ -25,6 +25,7 @@ export type EncounterMode = (typeof ENCOUNTER_MODES)[number];
 export const WAGER_STAKE = 2;
 export const REROLL_COST = 1;
 export const OFFER_COST = 2;
+export const BENCH_COST = 1;
 
 export interface WorldNode {
   id: string;
@@ -65,6 +66,7 @@ export interface Ally {
   equip: "band" | "spear" | null;
   /** A second class. It does not block gear or spells. */
   secondary: ClassOutcome | null;
+  benched: boolean;
 }
 
 export interface DropRoll {
@@ -157,6 +159,7 @@ function allyFrom(unit: Unit, spell: boolean): Ally {
     ability: null,
     equip: null,
     secondary: null,
+    benched: false,
   };
 }
 
@@ -176,6 +179,7 @@ function pip(): Ally {
     ability: null,
     equip: null,
     secondary: null,
+    benched: false,
   };
 }
 
@@ -236,11 +240,11 @@ function toUnit(ally: Ally): Unit {
 
 export function startBattle(campaign: Campaign): GameState {
   const enemies = openingRoster().filter((unit) => unit.side === "enemy");
-  const allies = campaign.party.filter((ally) => ally.hp > 0).map(toUnit);
+  const allies = campaign.party.filter((ally) => ally.hp > 0 && !ally.benched).map(toUnit);
   return createBattle({
     pressure: { enabled: false, waves: [] },
     units: [...allies, ...enemies],
-    casters: campaign.party.filter((ally) => ally.spell && ally.hp > 0).map((ally) => ally.id),
+    casters: campaign.party.filter((ally) => ally.spell && ally.hp > 0 && !ally.benched).map((ally) => ally.id),
     difficulty: campaign.difficulty,
     answerMode: campaign.answerMode,
     progressionState: campaign.progression,
@@ -354,6 +358,47 @@ export function equip(campaign: Campaign, allyId: string, kit: KitId): Campaign 
     return { ...item, equip: kit === "spear" ? ("spear" as const) : ("band" as const) };
   });
   return { ...campaign, stash, party };
+}
+
+export function swapKit(campaign: Campaign, fromId: string, toId: string, slot: "ability" | "equip"): Campaign {
+  if (fromId === toId) return campaign;
+  const from = campaign.party.find((ally) => ally.id === fromId);
+  const to = campaign.party.find((ally) => ally.id === toId);
+  if (!from || !to || from.benched || to.benched) return campaign;
+  return {
+    ...campaign,
+    party: campaign.party.map((ally) => {
+      if (ally.id === fromId) return slot === "ability" ? { ...ally, ability: to.ability } : { ...ally, equip: to.equip };
+      if (ally.id === toId) return slot === "ability" ? { ...ally, ability: from.ability } : { ...ally, equip: from.equip };
+      return ally;
+    }),
+  };
+}
+
+export function benchAlly(campaign: Campaign, id: string): Campaign {
+  if (campaign.gold < BENCH_COST) return campaign;
+  const active = campaign.party.filter((ally) => ally.hp > 0 && !ally.benched);
+  if (active.length < 2 || !active.some((ally) => ally.id === id)) return campaign;
+  const gold = campaign.gold - BENCH_COST;
+  return {
+    ...campaign,
+    gold,
+    party: campaign.party.map((ally) => (ally.id === id ? { ...ally, benched: true } : ally)),
+    lastEvent: `${campaign.gold} − ${BENCH_COST} = ${gold}.`,
+  };
+}
+
+export function recallAlly(campaign: Campaign, id: string): Campaign {
+  if (campaign.gold < BENCH_COST) return campaign;
+  const ally = campaign.party.find((item) => item.id === id);
+  if (!ally?.benched) return campaign;
+  const gold = campaign.gold - BENCH_COST;
+  return {
+    ...campaign,
+    gold,
+    party: campaign.party.map((item) => (item.id === id ? { ...item, benched: false } : item)),
+    lastEvent: `${campaign.gold} − ${BENCH_COST} = ${gold}.`,
+  };
 }
 
 function applyAllyBuild(party: readonly Ally[], id: BuildId): Ally[] {

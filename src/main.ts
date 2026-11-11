@@ -7,7 +7,11 @@ import {
   BUN_COST,
   RECRUIT_COST,
   WORLD,
+  BENCH_COST,
+  benchAlly,
   buyBun,
+  recallAlly,
+  swapKit,
   createCampaign,
   equip,
   KITS,
@@ -55,7 +59,9 @@ import {
   pickUnit,
   promptFor,
   ROSTER_ORDER,
+  previewAction,
   presentationDelay,
+  rangeKeys,
   scriptedStep,
   selectionReach,
   setBattleMath,
@@ -63,6 +69,7 @@ import {
   statusOf,
   stepEnemy,
   stepWalk,
+  turnOrder,
   withCrowd,
   type GameState,
   type Tile,
@@ -86,6 +93,8 @@ const round = required(document.querySelector<HTMLElement>("#round"), "#round");
 const sides = required(document.querySelector<HTMLElement>("#sides"), "#sides");
 const prompt = required(document.querySelector<HTMLElement>("#prompt"), "#prompt");
 const detail = required(document.querySelector<HTMLElement>("#detail"), "#detail");
+const previewLine = required(document.querySelector<HTMLElement>("#preview"), "#preview");
+const order = required(document.querySelector<HTMLElement>("#order"), "#order");
 const roster = required(document.querySelector<HTMLElement>("#roster"), "#roster");
 const meta = required(document.querySelector<HTMLElement>("#meta"), "#meta");
 const level = required(document.querySelector<HTMLElement>("#level"), "#level");
@@ -464,6 +473,12 @@ function renderMap() {
   }
   const party = document.createElement("div");
   party.id = "map-party";
+  const levelLine = document.createElement("p");
+  levelLine.id = "party-level";
+  const cost = xpCostForNext(campaign.progression.level);
+  const gains = campaign.progression.taken.map((id) => `${buildNames([id])} ${id === "focused-strike" ? "+2" : id === "field-kit" ? "+3" : "+1"}`);
+  levelLine.textContent = `Level ${campaign.progression.level} · XP ${campaign.progression.xp}/${cost}${gains.length ? ` · ${gains.join(" · ")}` : ""}`;
+  party.append(levelLine);
   for (const ally of campaign.party) {
     const card = document.createElement("div");
     card.className = "card";
@@ -474,8 +489,47 @@ function renderMap() {
     const ability = ally.ability ? KITS[ally.ability].name : "—";
     const gear = ally.equip ? KITS[ally.equip].name : "—";
     const second = ally.secondary ? ` · ${ally.secondary}` : "";
-    line.textContent = `${ally.hp}/${ally.maxHp} · ${spark} · ${ability} · ${gear}${second}`;
+    line.textContent = `${ally.hp}/${ally.maxHp} · ${spark} · ${ability} · ${gear}${second}${ally.benched ? " · bench" : ""}`;
     card.append(name, line);
+    for (const other of campaign.party) {
+      if (other.id === ally.id || ally.benched || other.benched) continue;
+      if (ally.ability || other.ability) {
+        const swapAbility = document.createElement("button");
+        swapAbility.type = "button";
+        swapAbility.dataset.swap = "ability";
+        swapAbility.dataset.ally = ally.id;
+        swapAbility.dataset.other = other.id;
+        swapAbility.textContent = `${ability} · ${other.name}`;
+        swapAbility.addEventListener("click", () => {
+          campaign = swapKit(campaign, ally.id, other.id, "ability");
+          render();
+        });
+        card.append(swapAbility);
+      }
+      if (ally.equip || other.equip) {
+        const swapGear = document.createElement("button");
+        swapGear.type = "button";
+        swapGear.dataset.swap = "equip";
+        swapGear.dataset.ally = ally.id;
+        swapGear.dataset.other = other.id;
+        swapGear.textContent = `${gear} · ${other.name}`;
+        swapGear.addEventListener("click", () => {
+          campaign = swapKit(campaign, ally.id, other.id, "equip");
+          render();
+        });
+        card.append(swapGear);
+      }
+    }
+    const seat = document.createElement("button");
+    seat.type = "button";
+    seat.dataset.bench = ally.id;
+    seat.textContent = ally.benched ? `Call · ${BENCH_COST}` : `Bench · ${BENCH_COST}`;
+    seat.disabled = campaign.gold < BENCH_COST || (!ally.benched && campaign.party.filter((item) => item.hp > 0 && !item.benched).length < 2);
+    seat.addEventListener("click", () => {
+      campaign = ally.benched ? recallAlly(campaign, ally.id) : benchAlly(campaign, ally.id);
+      render();
+    });
+    card.append(seat);
     party.append(card);
   }
   map.append(party);
@@ -601,17 +655,37 @@ function renderHud() {
   renderOffers();
   renderActions();
   renderCast();
+  const previews = (["bump", "spark", "ember", "flare"] as const)
+    .map((kind) => {
+      const preview = previewAction(state, kind);
+      return preview ? `${kind} ${preview.prompt}` : "";
+    })
+    .filter(Boolean);
+  previewLine.textContent = mode === "map" ? "" : previews.join(" · ");
+  order.replaceChildren();
+  if (mode !== "map") {
+    for (const step of turnOrder(state)) {
+      const pill = document.createElement("span");
+      pill.className = step.side === "player" ? "pill on" : "pill";
+      pill.dataset.order = step.id;
+      pill.textContent = state.units.find((unit) => unit.id === step.id)?.name ?? step.id;
+      order.append(pill);
+    }
+  }
   if (rosterState !== state) {
     rosterState = state;
     renderRoster();
   }
   const walking = commandingUnit(state);
   const walkPath = walking && state.walk.length > 0 ? [{ col: walking.col, row: walking.row }, ...state.walk] : [];
+  const ranges = rangeKeys(state);
   board.sync({
     units: state.units,
     selectedId: state.selectedId,
     phase: state.phase,
     moveKeys: moveKeysFor(state, reach),
+    attackKeys: new Set(ranges.attack),
+    abilityKeys: new Set(ranges.ability),
     attackIds: attacks,
     path: walkPath.length > 1 ? walkPath : hoverPath(state, hover, reach, attacks),
     hover,
@@ -651,6 +725,8 @@ function persist() {
 function render() {
   syncMathControls();
   if (mode === "map") {
+    previewLine.textContent = "";
+    order.replaceChildren();
     renderMapChrome();
   } else {
     map.hidden = true;
