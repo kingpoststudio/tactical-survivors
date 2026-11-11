@@ -139,6 +139,30 @@ export type ShopOffer =
   | { kind: "kit"; kit: KitId; favor: ClassOutcome }
   | { kind: "build"; build: BuildId; favor: ClassOutcome };
 
+export type UpgradeKind = "hp" | "atk" | "fire" | "perk";
+
+export interface UpgradeCard {
+  kind: UpgradeKind;
+  name: string;
+  detail: string;
+  /** A class may like this card. Any ally can still take it. */
+  favors: ClassOutcome;
+}
+
+export interface LevelPick {
+  allyId: string;
+  level: number;
+  cards: UpgradeCard[];
+}
+
+export interface ShelfOffer {
+  name: string;
+  tier: 1 | 2 | 3;
+  cost: number;
+  kit: KitId;
+  locked: boolean;
+}
+
 export type RewardOffer =
   | { kind: "weapon"; kit: "band" | "spear"; favor: ClassOutcome }
   | { kind: "ability"; kit: "ember" | "flare"; favor: ClassOutcome }
@@ -176,6 +200,10 @@ export interface Campaign {
   /** Latest player-chosen ending. Travel stays open. */
   summary: "victory" | "defeat" | null;
   found: { role: string; kit: KitId; rarity: Rarity }[];
+  /** Three cards for one ally. It waits until the player picks. */
+  levelPick: LevelPick | null;
+  /** Town shelf. A locked row stays through a reroll. */
+  shelf: ShelfOffer[];
 }
 
 export type TravelResult =
@@ -259,6 +287,8 @@ export function createCampaign(): Campaign {
     rewards: [],
     summary: null,
     found: [],
+    levelPick: null,
+    shelf: [],
   };
 }
 
@@ -360,7 +390,10 @@ export function travel(campaign: Campaign, nodeId: string): TravelResult {
   if (node.kind === "battle" || node.kind === "boss") {
     return { kind: "battle", campaign: { ...next, lastEvent: node.kind === "boss" ? "Crown." : "A fight starts." }, battle: startBattle(next) };
   }
-  if (node.kind === "town") next = { ...next, lastEvent: "Town." };
+  if (node.kind === "town") {
+    next = { ...next, lastEvent: "Town." };
+    if (next.shelf.length === 0) next = { ...next, shelf: shelfFor(next.seed, shopProgress(next)) };
+  }
   if (node.kind === "camp") next = { ...next, lastEvent: "Camp." };
   if (node.kind === "setup") next = { ...next, lastEvent: "Glen." };
   return { kind: "map", campaign: next };
@@ -534,17 +567,17 @@ export function returnFromBattle(campaign: Campaign, battle: GameState, rng: () 
       pending: [],
     },
   };
-  if (battle.winner !== "player") return { ...carried, lastEvent: "The meadow holds. No gold." };
+  if (battle.winner !== "player") return offerLevelPick(campaign, { ...carried, lastEvent: "The meadow holds. No gold." });
   const payout = mode === "twin" ? BATTLE_GOLD * 2 : BATTLE_GOLD;
   const gold = campaign.gold + payout;
   const cleared = campaign.cleared.includes(campaign.nodeId) ? campaign.cleared : [...campaign.cleared, campaign.nodeId];
-  return {
+  return offerLevelPick(campaign, {
     ...carried,
     gold,
     cleared,
     rewards: rewardOffers((campaign.seed ^ foldName(campaign.nodeId)) >>> 0, campaign.nodeId, ownedKits(carried)),
     lastEvent: `Clear. ${campaign.gold} + ${payout} = ${gold}.`,
-  };
+  });
 }
 
 /** Stake game gold on a math problem. A wrong answer spends the stake and never pays the typed number. */
@@ -641,16 +674,24 @@ export function offersFromSeed(seed: number, owned: readonly KitId[], taken: rea
   return picked;
 }
 
-/** Spend 1 gold to draw a new pair of offers. No clock. */
+/** Spend 1 gold to draw a new pair of offers. Locked shelf rows stay. No clock. */
 export function rerollShop(campaign: Campaign): Campaign {
   if (campaign.gold < REROLL_COST) return campaign;
   const seed = (campaign.seed + 1) >>> 0;
   const gold = campaign.gold - REROLL_COST;
+  const fresh = shelfFor(seed, shopProgress(campaign));
+  const width = Math.max(fresh.length, campaign.shelf.length);
+  const shelf: ShelfOffer[] = [];
+  for (let index = 0; index < width; index++) {
+    if (campaign.shelf[index]?.locked) shelf.push(campaign.shelf[index]);
+    else if (fresh[index]) shelf.push({ ...fresh[index], locked: false });
+  }
   return {
     ...campaign,
     gold,
     seed,
     offers: offersFromSeed(seed, ownedKits(campaign), campaign.progression.taken),
+    shelf,
     lastEvent: `${campaign.gold} − ${REROLL_COST} = ${gold}.`,
   };
 }
@@ -705,6 +746,154 @@ export function chooseMapBuild(campaign: Campaign, id: BuildId): Campaign {
   let party = campaign.party;
   for (const build of added) party = applyAllyBuild(party, build);
   return { ...campaign, progression: accepted.progression, party };
+}
+
+const UPGRADE_DECK: readonly UpgradeCard[] = [
+  { kind: "hp", name: "+2 HP", detail: "2 more hearts.", favors: "Warden" },
+  { kind: "atk", name: "+1 attack", detail: "Hits for 1 more.", favors: "Scout" },
+  { kind: "fire", name: "Ember", detail: "A fire ability. Favored by Sorceress. Any class can take it.", favors: "Sorceress" },
+  { kind: "perk", name: "Steady", detail: "Defense +1. A favored class gets +1 more.", favors: "Warden" },
+];
+
+/** Three cards. Same ally, seed, and level, same cards. Ember is always one of them. */
+export function levelCards(seed: number, allyId: string, level: number): UpgradeCard[] {
+  const fire = UPGRADE_DECK.find((card) => card.kind === "fire");
+  if (!fire) return [];
+  const rest = UPGRADE_DECK.filter((card) => card.kind !== "fire");
+  const rng = mixSeed((foldName(allyId) ^ Math.imul((seed + level + 1) >>> 0, 0x9e3779b1)) >>> 0);
+  const bag = [...rest];
+  const picked: UpgradeCard[] = [fire];
+  while (picked.length < 3 && bag.length > 0) picked.push(bag.splice(Math.floor(rng() * bag.length), 1)[0]);
+  for (let index = picked.length - 1; index > 0; index--) {
+    const swap = Math.floor(rng() * (index + 1));
+    const hold = picked[index];
+    picked[index] = picked[swap];
+    picked[swap] = hold;
+  }
+  return picked;
+}
+
+/** Open a card pick when the party level went up. It does not spend extra XP and it does not expire. */
+export function offerLevelPick(before: Campaign, after: Campaign): Campaign {
+  if (after.levelPick || after.progression.level <= before.progression.level) return after;
+  const ally = after.party.find((item) => item.hp > 0 && !item.benched) ?? after.party[0];
+  if (!ally) return after;
+  return {
+    ...after,
+    levelPick: { allyId: ally.id, level: after.progression.level, cards: levelCards(after.seed, ally.id, after.progression.level) },
+  };
+}
+
+/** Take one card for that ally. Class favor is a bonus, not a lock. */
+export function takeLevelCard(campaign: Campaign, index: number): Campaign {
+  const pick = campaign.levelPick;
+  const card = pick?.cards[index];
+  if (!pick || !card) return campaign;
+  const party = campaign.party.map((ally) => {
+    if (ally.id !== pick.allyId) return ally;
+    if (card.kind === "hp") return { ...ally, maxHp: ally.maxHp + 2, hp: ally.hp + 2 };
+    if (card.kind === "atk") return { ...ally, atk: ally.atk + 1 };
+    if (card.kind === "fire") {
+      const stronger = ally.ability === "ember" || ally.ability === "flare" ? 1 : 0;
+      return { ...ally, ability: ally.ability ?? "ember", atk: ally.atk + stronger };
+    }
+    const favored = ally.role === card.favors || ally.secondary === card.favors;
+    return { ...ally, def: ally.def + 1 + (favored ? 1 : 0) };
+  });
+  return { ...campaign, party, levelPick: null, lastEvent: card.name };
+}
+
+const SHELF_CATALOG: readonly Omit<ShelfOffer, "locked">[] = [
+  { name: "Band", tier: 1, cost: 2, kit: "band" },
+  { name: "Spear", tier: 1, cost: 2, kit: "spear" },
+  { name: "Ember", tier: 2, cost: 3, kit: "ember" },
+  { name: "Flare", tier: 3, cost: 4, kit: "flare" },
+];
+
+/** Later stops stock better tiers. Rank is route progress, not a clock. */
+export function shopTier(rank: number): 1 | 2 | 3 {
+  if (rank >= 6) return 3;
+  if (rank >= 3) return 2;
+  return 1;
+}
+
+export function shopProgress(campaign: Campaign): number {
+  const ranks = campaign.cleared.map((id) => routeRank(id));
+  return Math.max(routeRank(campaign.nodeId), ...ranks, 0);
+}
+
+/** Same seed and rank, same shelf. The best tier for that rank is always offered. */
+export function shelfFor(seed: number, rank: number): ShelfOffer[] {
+  const tier = shopTier(rank);
+  const pool = SHELF_CATALOG.filter((item) => item.tier <= tier);
+  const rng = mixSeed((seed ^ Math.imul(rank + 1, 0x85ebca6b)) >>> 0);
+  const bag = [...pool];
+  const picked: ShelfOffer[] = [];
+  const lead = bag.findIndex((item) => item.tier === tier);
+  if (lead >= 0) picked.push({ ...bag.splice(lead, 1)[0], locked: false });
+  const count = Math.min(3, pool.length);
+  while (picked.length < count && bag.length > 0) {
+    picked.push({ ...bag.splice(Math.floor(rng() * bag.length), 1)[0], locked: false });
+  }
+  return picked;
+}
+
+export function lockShelf(campaign: Campaign, index: number): Campaign {
+  const item = campaign.shelf[index];
+  if (!item) return campaign;
+  return {
+    ...campaign,
+    shelf: campaign.shelf.map((offer, slot) => (slot === index ? { ...offer, locked: !offer.locked } : offer)),
+  };
+}
+
+export function buyShelf(campaign: Campaign, index: number): Campaign {
+  const item = campaign.shelf[index];
+  if (!item || campaign.gold < item.cost || ownedKits(campaign).includes(item.kit)) return campaign;
+  const gold = campaign.gold - item.cost;
+  return {
+    ...campaign,
+    gold,
+    stash: [...campaign.stash, item.kit],
+    shelf: campaign.shelf.filter((_, slot) => slot !== index),
+    lastEvent: `${campaign.gold} − ${item.cost} = ${gold}.`,
+  };
+}
+
+export const SELL_GOLD = 1;
+
+/** Sell one kit from the stash or from an ally. Pays game gold only. */
+export function sellGear(campaign: Campaign, kit: KitId): Campaign {
+  const stashAt = campaign.stash.indexOf(kit);
+  const gold = campaign.gold + SELL_GOLD;
+  if (stashAt >= 0) {
+    const stash = campaign.stash.filter((_, index) => index !== stashAt);
+    return { ...campaign, gold, stash, lastEvent: `Sold. ${campaign.gold} + ${SELL_GOLD} = ${gold}.` };
+  }
+  const wearer = campaign.party.find((ally) => ally.ability === kit || ally.equip === kit);
+  if (!wearer) return campaign;
+  return {
+    ...campaign,
+    gold,
+    party: campaign.party.map((ally) =>
+      ally.id === wearer.id
+        ? { ...ally, ability: ally.ability === kit ? null : ally.ability, equip: ally.equip === kit ? null : ally.equip }
+        : ally,
+    ),
+    lastEvent: `Sold. ${campaign.gold} + ${SELL_GOLD} = ${gold}.`,
+  };
+}
+
+/** A hint when two related kits are owned. Null when the pair is incomplete. */
+export function synergyHint(owned: readonly KitId[]): string | null {
+  const has = (kit: KitId) => owned.includes(kit);
+  if (has("ember") && has("flare")) return "Fire pair. Ember and Flare.";
+  if (has("band") && has("spear")) return "Guard pair. Band and Spear.";
+  return null;
+}
+
+export function synergyFor(campaign: Campaign): string | null {
+  return synergyHint(ownedKits(campaign));
 }
 
 function foldName(nodeId: string): number {
@@ -859,6 +1048,10 @@ export function loadRun(raw: string | null): SavedRun | null {
         seed: campaign.seed ?? 0,
         wager: campaign.wager ?? null,
         twist: campaign.twist ?? null,
+        found: campaign.found ?? [],
+        summary: campaign.summary ?? null,
+        levelPick: campaign.levelPick ?? null,
+        shelf: campaign.shelf ?? [],
       },
     };
   } catch {

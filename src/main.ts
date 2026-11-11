@@ -33,10 +33,16 @@ import {
   nodeById,
   recruit,
   returnFromBattle,
+  sellGear,
   setAnswerMode,
   setDifficulty,
   startBattle,
   summaryLines,
+  synergyFor,
+  takeLevelCard,
+  lockShelf,
+  buyShelf,
+  SELL_GOLD,
   travel,
   type Campaign,
 } from "./campaign.ts";
@@ -447,6 +453,31 @@ function renderMap() {
       render();
     });
     shop.append(bun, ally, bet);
+    for (const [index, item] of campaign.shelf.entries()) {
+      const row = document.createElement("div");
+      row.className = "card";
+      const label = document.createElement("p");
+      label.textContent = `${item.name} · tier ${item.tier} · ${item.cost}`;
+      const buy = document.createElement("button");
+      buy.type = "button";
+      buy.dataset.shelf = String(index);
+      buy.textContent = `Buy · ${item.cost}`;
+      buy.disabled = campaign.gold < item.cost;
+      buy.addEventListener("click", () => {
+        campaign = buyShelf(campaign, index);
+        render();
+      });
+      const lock = document.createElement("button");
+      lock.type = "button";
+      lock.dataset.lock = String(index);
+      lock.textContent = item.locked ? "Locked" : "Lock";
+      lock.addEventListener("click", () => {
+        campaign = lockShelf(campaign, index);
+        render();
+      });
+      row.append(label, buy, lock);
+      shop.append(row);
+    }
     map.append(shop);
     const wager = campaign.wager;
     if (wager?.outcome === "open") {
@@ -509,6 +540,15 @@ function renderMap() {
         });
         gear.append(button);
       }
+      const sell = document.createElement("button");
+      sell.type = "button";
+      sell.dataset.sell = kit;
+      sell.textContent = `Sell ${KITS[kit].name} · ${SELL_GOLD}`;
+      sell.addEventListener("click", () => {
+        campaign = sellGear(campaign, kit);
+        render();
+      });
+      gear.append(sell);
     }
     map.append(gear);
   }
@@ -520,6 +560,34 @@ function renderMap() {
   const gains = campaign.progression.taken.map((id) => `${buildNames([id])} ${id === "focused-strike" ? "+2" : id === "field-kit" ? "+3" : "+1"}`);
   levelLine.textContent = `Level ${campaign.progression.level} · XP ${campaign.progression.xp}/${cost}${gains.length ? ` · ${gains.join(" · ")}` : ""}`;
   party.append(levelLine);
+  const pair = synergyFor(campaign);
+  if (pair) {
+    const hint = document.createElement("p");
+    hint.id = "synergy";
+    hint.textContent = pair;
+    party.append(hint);
+  }
+  const pick = campaign.levelPick;
+  if (pick) {
+    const choice = document.createElement("section");
+    choice.id = "level-pick";
+    const who = campaign.party.find((ally) => ally.id === pick.allyId);
+    const heading = document.createElement("h2");
+    heading.textContent = `${who?.name ?? "Ally"} · level ${pick.level}`;
+    choice.append(heading);
+    pick.cards.forEach((card, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.card = String(index);
+      button.textContent = `${card.name} · favors ${card.favors} · ${card.detail}`;
+      button.addEventListener("click", () => {
+        campaign = takeLevelCard(campaign, index);
+        render();
+      });
+      choice.append(button);
+    });
+    party.append(choice);
+  }
   for (const ally of campaign.party) {
     const card = document.createElement("div");
     card.className = "card";
@@ -532,6 +600,18 @@ function renderMap() {
     const second = ally.secondary ? ` · ${ally.secondary}` : "";
     line.textContent = `${ally.hp}/${ally.maxHp} · ${spark} · ${ability} · ${gear}${second}${ally.benched ? " · bench" : ""}`;
     card.append(name, line);
+    for (const worn of [ally.ability, ally.equip]) {
+      if (!worn) continue;
+      const sellWorn = document.createElement("button");
+      sellWorn.type = "button";
+      sellWorn.dataset.sell = worn;
+      sellWorn.textContent = `Sell ${KITS[worn].name} · ${SELL_GOLD}`;
+      sellWorn.addEventListener("click", () => {
+        campaign = sellGear(campaign, worn);
+        render();
+      });
+      card.append(sellWorn);
+    }
     for (const other of campaign.party) {
       if (other.id === ally.id || ally.benched || other.benched) continue;
       if (ally.ability || other.ability) {

@@ -34,8 +34,15 @@ import {
   returnFromBattle,
   routeRank,
   scaleFor,
+  sellGear,
   setAnswerMode,
+  shelfFor,
+  shopTier,
   summaryLines,
+  synergyHint,
+  takeLevelCard,
+  levelCards,
+  lockShelf,
   setDifficulty,
   startBattle,
   travel,
@@ -558,5 +565,61 @@ assert.equal(savedBoss?.campaign.nodeId, "crown");
 assert.equal(createCampaign().summary, null);
 assert.equal(createCampaign().found.length, 0);
 assert.equal(createCampaign().nodeId, "camp");
+
+const deck = levelCards(2, "ilya", 1);
+assert.deepEqual(deck, levelCards(2, "ilya", 1));
+assert.equal(deck.length, 3);
+assert.ok(deck.some((card) => card.kind === "fire"));
+assert.equal("timeout" in deck[0], false);
+const fireAt = deck.findIndex((card) => card.kind === "fire");
+const ward = takeLevelCard({ ...createCampaign(), levelPick: { allyId: "ilya", level: 1, cards: deck } }, fireAt);
+assert.equal(ward.levelPick, null);
+assert.equal(ward.party.find((ally) => ally.id === "ilya")?.role, "Warden");
+assert.equal(ward.party.find((ally) => ally.id === "ilya")?.ability, "ember");
+const scoutCard = takeLevelCard({ ...createCampaign(), levelPick: { allyId: "penn", level: 1, cards: deck } }, fireAt);
+assert.equal(scoutCard.party.find((ally) => ally.id === "penn")?.role, "Scout");
+assert.equal(scoutCard.party.find((ally) => ally.id === "penn")?.ability, "ember");
+let grew = createCampaign();
+let grewBattle = startBattle(grew);
+grewBattle = {
+  ...grewBattle,
+  phase: "victory",
+  winner: "player",
+  progression: { ...grewBattle.progression, level: 1, xp: 0, pending: [] },
+};
+grew = returnFromBattle(grew, grewBattle, () => 0);
+assert.equal(grew.levelPick?.cards.length, 3);
+assert.equal(grew.party.some((ally) => ally.id === grew.levelPick?.allyId), true);
+assert.equal("timeout" in (grew.levelPick ?? {}), false);
+assert.equal("clock" in grew, false);
+const chosen = takeLevelCard(grew, 0);
+assert.equal(chosen.levelPick, null);
+assert.deepEqual(loadRun(saveRun(grew, false))?.campaign.levelPick, grew.levelPick);
+assert.equal(loadRun(saveRun(chosen, false))?.campaign.levelPick, null);
+assert.equal(shopTier(0), 1);
+assert.equal(shopTier(3), 2);
+assert.equal(shopTier(6), 3);
+assert.deepEqual(shelfFor(4, 0), shelfFor(4, 0));
+assert.ok(shelfFor(4, 0).every((item) => item.tier === 1));
+assert.ok(shelfFor(4, 8).some((item) => item.tier === 3));
+let shop = { ...createCampaign(), gold: 5, shelf: shelfFor(0, 0) };
+const lockedName = shop.shelf[0]?.name;
+shop = lockShelf(shop, 0);
+shop = rerollShop(shop);
+assert.equal(shop.gold, 4);
+assert.equal(shop.shelf[0]?.name, lockedName);
+assert.equal(shop.shelf[0]?.locked, true);
+const sold = sellGear({ ...createCampaign(), gold: 0, stash: ["band"] }, "band");
+assert.equal(sold.gold, 1);
+assert.deepEqual(sold.stash, []);
+assert.equal(sellGear(createCampaign(), "band").gold, 0);
+const soldSpear = sellGear(equip({ ...createCampaign(), stash: ["spear"], gold: 0 }, "penn", "spear"), "spear");
+assert.equal(soldSpear.gold, 1);
+assert.equal(soldSpear.party.find((ally) => ally.id === "penn")?.equip, null);
+assert.equal(synergyHint(["ember", "flare"]), "Fire pair. Ember and Flare.");
+assert.equal(synergyHint(["band", "spear"]), "Guard pair. Band and Spear.");
+assert.equal(synergyHint(["band"]), null);
+assert.equal(createCampaign().levelPick, null);
+assert.equal(createCampaign().shelf.length, 0);
 
 console.log("map rewards ok");
