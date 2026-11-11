@@ -79,7 +79,7 @@ import { isAnswerMode, isDifficulty } from "./mathcast.ts";
 import { waveForRound } from "./pressure.ts";
 import { buildNames, offersFor, xpCostForNext, type BuildId } from "./progression.ts";
 
-const KIND_LABEL = { camp: "Start", battle: "Battle", reward: "Reward", town: "Town", setup: "Setup" } as const;
+const KIND_LABEL = { camp: "Start", battle: "Battle", reward: "Reward", town: "Town", setup: "Setup", boss: "Boss" } as const;
 
 function required<T extends Element>(element: T | null, name: string): T {
   if (!element) throw new Error(`Ashfield is missing ${name}.`);
@@ -300,7 +300,7 @@ function renderMap() {
   for (const node of WORLD) {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = node.id === campaign.nodeId ? "node here" : "node";
+    button.className = node.id === campaign.nodeId ? "node here" : node.kind === "boss" ? "node boss" : "node";
     button.dataset.node = node.id;
     const clear = campaign.cleared.includes(node.id) ? " · clear" : "";
     const modeName = campaign.modes[node.id] ?? "";
@@ -311,6 +311,29 @@ function renderMap() {
     nodes.append(button);
   }
   map.append(nodes);
+  if (campaign.summary) {
+    const card = document.createElement("section");
+    card.id = "summary";
+    const title = document.createElement("h2");
+    title.textContent = campaign.summary === "victory" ? "Victory" : "Defeat";
+    const line = document.createElement("p");
+    const kits = campaign.party.flatMap((ally) => [ally.ability, ally.equip].filter(Boolean)).join(" ");
+    line.textContent = `Level ${campaign.progression.level} · XP ${campaign.progression.xp} · Gold ${campaign.gold} · ${buildNames(campaign.progression.taken) || "—"} · ${kits || "—"}`;
+    card.append(title, line);
+    map.append(card);
+  }
+  if (campaign.found.length > 0) {
+    const loot = document.createElement("div");
+    loot.id = "found";
+    for (const drop of campaign.found) {
+      const pill = document.createElement("span");
+      pill.className = "pill";
+      pill.textContent = `${drop.role} · ${KITS[drop.kit].name} · ${drop.rarity}`;
+      loot.append(pill);
+    }
+    map.append(loot);
+  }
+  const twist = campaign.twist;
   if (campaign.rewards.length > 0) {
     const picks = document.createElement("div");
     picks.id = "rewards";
@@ -342,7 +365,6 @@ function renderMap() {
     });
     map.append(picks);
   }
-  const twist = campaign.twist;
   if (twist && twist.nodeId === campaign.nodeId && twist.outcome === "open") {
     const card = document.createElement("div");
     card.id = "twist";
@@ -375,7 +397,7 @@ function renderMap() {
     fight.addEventListener("click", () => beginMapBattle());
     map.append(fight);
   }
-  if (campaign.nodeId === "town") {
+  if (nodeById(campaign.nodeId).kind === "town") {
     const shop = document.createElement("div");
     shop.id = "shop";
     const bun = document.createElement("button");

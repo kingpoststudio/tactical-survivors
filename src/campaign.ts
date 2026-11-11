@@ -15,7 +15,8 @@ export const REWARD_GOLD = 2;
  */
 export const PACE_ESTIMATE = { activeFightMinutes: 5, fightsPerRun: 8 } as const;
 
-export type NodeKind = "camp" | "battle" | "reward" | "town" | "setup";
+export type NodeKind = "camp" | "battle" | "reward" | "town" | "setup" | "boss";
+export type Rarity = "common" | "rare";
 export type KitId = "ember" | "band" | "spear" | "flare";
 export const CLASS_OUTCOMES = ["Warden", "Sorceress", "Scout"] as const;
 export type ClassOutcome = (typeof CLASS_OUTCOMES)[number];
@@ -36,11 +37,34 @@ export interface WorldNode {
 
 export const WORLD: readonly WorldNode[] = [
   { id: "camp", name: "Camp", kind: "camp", links: ["meadow", "glen"] },
-  { id: "meadow", name: "Meadow", kind: "battle", links: ["camp", "shrine", "glen"] },
+  { id: "meadow", name: "Meadow", kind: "battle", links: ["camp", "shrine", "glen", "ford"] },
   { id: "glen", name: "Glen", kind: "setup", links: ["camp", "meadow", "town"] },
   { id: "shrine", name: "Shrine", kind: "reward", links: ["meadow", "town"] },
   { id: "town", name: "Town", kind: "town", links: ["shrine", "glen"] },
+  { id: "ford", name: "Ford", kind: "town", links: ["meadow", "briar"] },
+  { id: "briar", name: "Briar", kind: "battle", links: ["ford", "mill"] },
+  { id: "mill", name: "Mill", kind: "town", links: ["briar", "hollow"] },
+  { id: "hollow", name: "Hollow", kind: "battle", links: ["mill", "marsh"] },
+  { id: "marsh", name: "Marsh", kind: "battle", links: ["hollow", "kiln"] },
+  { id: "kiln", name: "Kiln", kind: "town", links: ["marsh", "ridge"] },
+  { id: "ridge", name: "Ridge", kind: "battle", links: ["kiln", "orchard"] },
+  { id: "orchard", name: "Orchard", kind: "battle", links: ["ridge", "gate"] },
+  { id: "gate", name: "Gate", kind: "battle", links: ["orchard", "crown"] },
+  { id: "crown", name: "Crown", kind: "boss", links: ["gate"] },
 ];
+
+/** Eight fights is a pacing target, not a limit. Crown is the last stop. */
+export const ROUTE = ["meadow", "briar", "hollow", "marsh", "ridge", "orchard", "gate", "crown"] as const;
+
+export function routeRank(nodeId: string): number {
+  const index = ROUTE.indexOf(nodeId as (typeof ROUTE)[number]);
+  return index < 0 ? 0 : index + 1;
+}
+
+export function scaleFor(rank: number): { hp: number; atk: number } {
+  const step = Math.max(0, rank - 1);
+  return { hp: step * 2, atk: Math.floor(step / 2) };
+}
 
 /** A kit may favor a class. Any ally can still wear it. */
 export const KITS: Record<KitId, { name: string; favors: ClassOutcome; slot: "ability" | "equip" }> = {
@@ -126,6 +150,9 @@ export interface Campaign {
   twist: Twist | null;
   /** Pick one after a win. Empty means no choice is waiting. */
   rewards: RewardOffer[];
+  /** Latest player-chosen ending. Travel stays open. */
+  summary: "victory" | "defeat" | null;
+  found: { role: string; kit: KitId; rarity: Rarity }[];
 }
 
 export type TravelResult =
@@ -207,6 +234,8 @@ export function createCampaign(): Campaign {
     modes: {},
     twist: null,
     rewards: [],
+    summary: null,
+    found: [],
   };
 }
 
@@ -220,6 +249,22 @@ export function setAnswerMode(campaign: Campaign, answerMode: AnswerMode): Campa
   return { ...campaign, answerMode };
 }
 
+/** A warden with Ember or Flare hits for 1 more. Any class can still wear the fire. */
+export function fireBonus(ally: { role: string; ability: "ember" | "flare" | null }): number {
+  if (ally.role !== "Warden") return 0;
+  if (ally.ability !== "ember" && ally.ability !== "flare") return 0;
+  return 1;
+}
+
+/** Same monster type and seed, same rarity drop. */
+export function typeDrop(role: string, seed: number): { kit: KitId; rarity: Rarity } {
+  const rng = mixSeed((foldName(role) ^ Math.imul((seed + 3) >>> 0, 0x9e3779b1)) >>> 0);
+  const rare = rng() < 0.25;
+  if (role === "Brute") return { kit: rare ? "ember" : "band", rarity: rare ? "rare" : "common" };
+  if (role === "Raider") return { kit: rare ? "flare" : "spear", rarity: rare ? "rare" : "common" };
+  return { kit: rare ? "ember" : "flare", rarity: rare ? "rare" : "common" };
+}
+
 function toUnit(ally: Ally): Unit {
   return {
     id: ally.id,
@@ -230,7 +275,7 @@ function toUnit(ally: Ally): Unit {
     row: ally.row,
     hp: ally.hp,
     maxHp: ally.maxHp,
-    atk: ally.atk + (ally.equip === "spear" ? 1 : 0),
+    atk: ally.atk + (ally.equip === "spear" ? 1 : 0) + fireBonus(ally),
     def: ally.def + (ally.equip === "band" ? 1 : 0),
     mov: ally.mov,
     acted: false,
@@ -239,7 +284,20 @@ function toUnit(ally: Ally): Unit {
 }
 
 export function startBattle(campaign: Campaign): GameState {
-  const enemies = openingRoster().filter((unit) => unit.side === "enemy");
+  const scale = scaleFor(routeRank(campaign.nodeId));
+  let enemies = openingRoster()
+    .filter((unit) => unit.side === "enemy")
+    .map((unit) => ({
+      ...unit,
+      hp: unit.maxHp + scale.hp,
+      maxHp: unit.maxHp + scale.hp,
+      atk: unit.atk + scale.atk,
+    }));
+  if (campaign.nodeId === "crown") {
+    enemies = enemies.map((unit) =>
+      unit.id === "ash" ? { ...unit, name: "Cinderheart", hp: unit.hp + 6, maxHp: unit.maxHp + 6, atk: unit.atk + 2 } : unit,
+    );
+  }
   const allies = campaign.party.filter((ally) => ally.hp > 0 && !ally.benched).map(toUnit);
   return createBattle({
     pressure: { enabled: false, waves: [] },
@@ -276,8 +334,8 @@ export function travel(campaign: Campaign, nodeId: string): TravelResult {
   const node = nodeById(nodeId);
   let next: Campaign = { ...revealEncounter(campaign, nodeId), nodeId };
   if (node.kind === "reward") next = claimReward(next);
-  if (node.kind === "battle") {
-    return { kind: "battle", campaign: { ...next, lastEvent: "A fight starts." }, battle: startBattle(next) };
+  if (node.kind === "battle" || node.kind === "boss") {
+    return { kind: "battle", campaign: { ...next, lastEvent: node.kind === "boss" ? "Crown." : "A fight starts." }, battle: startBattle(next) };
   }
   if (node.kind === "town") next = { ...next, lastEvent: "Town." };
   if (node.kind === "camp") next = { ...next, lastEvent: "Camp." };
@@ -422,7 +480,7 @@ function restored(party: readonly Ally[], units: readonly Unit[]): Ally[] {
       ...ally,
       maxHp: unit.maxHp,
       hp: unit.maxHp,
-      atk: unit.atk - spear,
+      atk: unit.atk - spear - fireBonus(ally),
       def: unit.def - band,
       mov: unit.mov,
     };
@@ -436,11 +494,16 @@ export function returnFromBattle(campaign: Campaign, battle: GameState, rng: () 
   const dropped = collectDrops(defeated, ownedKits(campaign), battle.progression.taken, rng);
   let party = battle.winner === "player" ? restored(campaign.party, battle.units) : campaign.party;
   for (const id of dropped.builds) party = applyAllyBuild(party, id);
+  const fallen = battle.units.filter((unit) => unit.side === "enemy" && unit.hp <= 0);
+  const found = fallen.map((unit, index) => ({ role: unit.role, ...typeDrop(unit.role, (campaign.seed + index + 1) >>> 0) }));
+  const extraKits = found.map((drop) => drop.kit).filter((kit) => !ownedKits(campaign).includes(kit) && !dropped.kits.includes(kit));
   const carried: Campaign = {
     ...campaign,
-    stash: [...campaign.stash, ...dropped.kits],
+    stash: [...campaign.stash, ...dropped.kits, ...extraKits.filter((kit, index) => extraKits.indexOf(kit) === index)],
     favors: { ...campaign.favors, ...dropped.favors },
     party,
+    found,
+    summary: battle.winner === "player" ? (campaign.nodeId === "crown" ? "victory" : campaign.summary) : "defeat",
     progression: {
       xp: battle.progression.xp,
       level: battle.progression.level,
@@ -463,7 +526,7 @@ export function returnFromBattle(campaign: Campaign, battle: GameState, rng: () 
 
 /** Stake game gold on a math problem. A wrong answer spends the stake and never pays the typed number. */
 export function offerWager(campaign: Campaign, rng: () => number = Math.random): Campaign {
-  if (campaign.nodeId !== "town" || campaign.wager?.outcome === "open" || campaign.gold < WAGER_STAKE) return campaign;
+  if (nodeById(campaign.nodeId).kind !== "town" || campaign.wager?.outcome === "open" || campaign.gold < WAGER_STAKE) return campaign;
   return {
     ...campaign,
     wager: { stake: WAGER_STAKE, problem: makeProblem(campaign.difficulty, rng), outcome: "open" },
@@ -495,7 +558,7 @@ export function settleWager(campaign: Campaign, given: number): Campaign {
 }
 
 export function buyBun(campaign: Campaign): Campaign {
-  if (campaign.nodeId !== "town" || campaign.bunBought || campaign.gold < BUN_COST) return campaign;
+  if (nodeById(campaign.nodeId).kind !== "town" || campaign.bunBought || campaign.gold < BUN_COST) return campaign;
   const gold = campaign.gold - BUN_COST;
   return {
     ...campaign,
@@ -511,7 +574,7 @@ export function buyBun(campaign: Campaign): Campaign {
 }
 
 export function recruit(campaign: Campaign): Campaign {
-  if (campaign.nodeId !== "town" || campaign.recruited || campaign.gold < RECRUIT_COST) return campaign;
+  if (nodeById(campaign.nodeId).kind !== "town" || campaign.recruited || campaign.gold < RECRUIT_COST) return campaign;
   if (campaign.party.some((ally) => ally.id === "pip")) return campaign;
   const gold = campaign.gold - RECRUIT_COST;
   return {

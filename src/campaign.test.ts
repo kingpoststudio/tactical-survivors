@@ -32,10 +32,14 @@ import {
   recruit,
   recallAlly,
   returnFromBattle,
+  routeRank,
+  scaleFor,
   setAnswerMode,
   setDifficulty,
   startBattle,
   travel,
+  typeDrop,
+  fireBonus,
 } from "./campaign.ts";
 import { answerCast, chooseAction, clickTile, createBattle, presentStep, presentationDelay, previewAction, rangeKeys, turnOrder } from "./game.ts";
 
@@ -196,7 +200,7 @@ assert.equal(again.battle.progression.level, 1);
 assert.deepEqual(again.battle.progression.taken, ["long-stride", "brush-cover", "focused-strike", "ward-plate"]);
 assert.equal(again.battle.units.find((unit) => unit.id === "ilya")?.ability, "ember");
 assert.equal(again.battle.units.find((unit) => unit.id === "ilya")?.def, 4);
-assert.equal(again.battle.units.find((unit) => unit.id === "ilya")?.atk, 6);
+assert.equal(again.battle.units.find((unit) => unit.id === "ilya")?.atk, 7);
 assert.equal(again.battle.units.find((unit) => unit.id === "mora")?.maxHp, 10);
 
 let oak = again.battle;
@@ -307,7 +311,7 @@ assert.ok(bench.progression.taken.includes("focused-strike"));
 assert.equal(bench.party.find((ally) => ally.id === "ilya")?.atk, 6);
 const nextFight = startBattle(bench);
 assert.equal(nextFight.units.find((unit) => unit.id === "ilya")?.ability, "ember");
-assert.equal(nextFight.units.find((unit) => unit.id === "ilya")?.atk, 6);
+assert.equal(nextFight.units.find((unit) => unit.id === "ilya")?.atk, 7);
 assert.ok(nextFight.progression.taken.includes("focused-strike"));
 
 assert.equal(encounterMode("meadow", 4), encounterMode("meadow", 4));
@@ -499,5 +503,48 @@ assert.equal(open.spell?.outcome, "open");
 assert.equal(presentStep(open).spell?.outcome, "open");
 assert.equal(presentStep(open).spell?.problem.prompt, open.spell?.problem.prompt);
 assert.equal(presentStep(open).units.find((unit) => unit.id === "vetch")?.hp, open.units.find((unit) => unit.id === "vetch")?.hp);
+
+assert.equal(routeRank("meadow"), 1);
+assert.equal(routeRank("crown"), 8);
+assert.equal(routeRank("camp"), 0);
+assert.equal(scaleFor(1).hp, 0);
+assert.equal(scaleFor(1).atk, 0);
+assert.equal(scaleFor(8).hp, 14);
+assert.equal(scaleFor(8).atk, 3);
+assert.equal(linked("gate", "crown"), true);
+assert.equal(linked("meadow", "ford"), true);
+const steps = ["meadow", "ford", "briar", "mill", "hollow", "marsh", "kiln", "ridge", "orchard", "gate", "crown"];
+let route = createCampaign();
+for (const step of steps) {
+  const moved = travel(route, step);
+  assert.notEqual(moved.kind, "stay");
+  route = moved.campaign;
+}
+assert.equal(route.nodeId, "crown");
+const boss = startBattle(route);
+assert.equal(boss.units.find((unit) => unit.id === "ash")?.name, "Cinderheart");
+assert.ok((boss.units.find((unit) => unit.id === "ash")?.maxHp ?? 0) > 12);
+const cleared = returnFromBattle(route, { ...boss, phase: "victory", winner: "player" }, () => 0);
+assert.equal(cleared.summary, "victory");
+assert.equal("clock" in cleared, false);
+assert.notEqual(travel(cleared, "gate").kind, "stay");
+const fallen = returnFromBattle(route, { ...boss, phase: "victory", winner: "enemy" });
+assert.equal(fallen.summary, "defeat");
+assert.notEqual(travel(fallen, "gate").kind, "stay");
+assert.deepEqual(typeDrop("Brute", 4), typeDrop("Brute", 4));
+assert.ok(typeDrop("Brute", 4).rarity === "common" || typeDrop("Brute", 4).rarity === "rare");
+assert.equal(fireBonus({ role: "Warden", ability: "ember" }), 1);
+assert.equal(fireBonus({ role: "Warden", ability: "flare" }), 1);
+assert.equal(fireBonus({ role: "Scout", ability: "ember" }), 0);
+const scout = equip({ ...createCampaign(), stash: ["ember"] }, "penn", "ember");
+assert.equal(startBattle(scout).units.find((unit) => unit.id === "penn")?.atk, 4);
+const warden = equip({ ...createCampaign(), stash: ["ember"] }, "ilya", "ember");
+assert.equal(startBattle(warden).units.find((unit) => unit.id === "ilya")?.atk, 5);
+const savedBoss = loadRun(saveRun(cleared, false));
+assert.equal(savedBoss?.campaign.summary, "victory");
+assert.equal(savedBoss?.campaign.nodeId, "crown");
+assert.equal(createCampaign().summary, null);
+assert.equal(createCampaign().found.length, 0);
+assert.equal(createCampaign().nodeId, "camp");
 
 console.log("map rewards ok");
